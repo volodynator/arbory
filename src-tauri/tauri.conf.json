@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "notion-cloneNotion Clone",
-  "version": "0.1.0",
+  "productName": "Arbory",
+  "version": "1.0.0",
   "identifier": "com.volodynator.arbory",
   "build": {
     "frontendDist": "../dist",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "notion-cloneNotion Clone",
+        "title": "Arbory",
         "width": 800,
         "height": 600,
         "resizable": true,

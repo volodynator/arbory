@@ -1,0 +1,40 @@
+## Node
+node_modules/
+dist/
+build/
+public/build/
+/.vite/
+/.parcel-cache/
+
+## Vite
+/out/
+*.local
+
+## Environment
+.env
+.env.*
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Editor
+.vscode/
+.idea/
+*.sublime-workspace
+
+## Tauri / Rust
+/src-tauri/target/
+/target/
+**/target/
+/src-tauri/ua-debug.log
+
+## Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+## Misc
+.cache/
+.next/
+coverage/

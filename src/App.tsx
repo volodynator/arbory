@@ -5,7 +5,7 @@ import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { createLowlight, common } from "lowlight";
-import { BadgeCheck, Check, ChevronDown, Circle, CircleCheckBig, Eraser, File, FileArchive, FileCode2, FileImage, FileText, Film, Link2, Paperclip, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { BadgeCheck, Check, ChevronDown, Circle, CircleCheckBig, Clock, Eraser, File, FileArchive, FileCode2, FileImage, FileText, Film, Link2, Paperclip, Plus, RotateCcw, Trash2, X } from "lucide-react";
 
 type TreeNode = {
   id: string;
@@ -287,90 +287,38 @@ const findNodeById = (node: TreeNode, targetId: string): TreeNode | null => {
 const initialProjects: Project[] = [
   {
     id: crypto.randomUUID(),
-    name: "Product Launch",
+    name: "Getting Started",
     tree: {
       id: crypto.randomUUID(),
-      title: "Launch Q3 Product",
+      title: "Welcome to Arbory",
       done: false,
-      content: "<h2>Launch Strategy</h2><p>Define milestones, owners and launch dates.</p>",
+      content: "<h2>How to use this workspace</h2><p>1. Click <strong>New project</strong> to create a project.</p><p>2. Select any node to edit its title, content, link, and files.</p><p>3. Use <strong>Add child</strong> to break work into smaller steps.</p><p>4. Drag the panel edge to resize the left sidebar.</p><p>5. Mark tasks complete when you finish them.</p>",
       url: undefined,
       files: [],
       children: [
         {
           id: crypto.randomUUID(),
-          title: "Design Assets",
+          title: "Create your first node",
           done: true,
-          content: "<p>Finalize hero visuals and social templates.</p>",
+          content: "<p>Select the root node and start editing node content.</p>",
           url: undefined,
           files: [],
           children: []
         },
         {
           id: crypto.randomUUID(),
-          title: "Marketing Plan",
+          title: "Add sub-tasks",
           done: false,
-          content: "<p>Write campaign brief and channel calendar.</p>",
+          content: "<p>Use <strong>Add child</strong> to create subtasks for any node.</p>",
           url: undefined,
           files: [],
           children: []
         },
         {
           id: crypto.randomUUID(),
-          title: "Technical Readiness",
+          title: "Resize the sidebar",
           done: false,
-          content: "<p>Performance pass, QA checklist and rollback plan.</p>",
-          url: undefined,
-          files: [],
-          children: [
-            {
-              id: crypto.randomUUID(),
-              title: "QA Regression",
-              done: true,
-              content: "<p>All critical flows tested.</p>",
-              url: undefined,
-              files: [],
-              children: []
-            },
-            {
-              id: crypto.randomUUID(),
-              title: "Final UAT",
-              done: false,
-              content: "<p>Schedule final product walkthrough.</p>",
-              url: undefined,
-              files: [],
-              children: []
-            }
-          ]
-        }
-      ]
-    },
-    trash: []
-  },
-  {
-    id: crypto.randomUUID(),
-    name: "Mobile App",
-    tree: {
-      id: crypto.randomUUID(),
-      title: "Mobile Rewrite",
-      done: false,
-      content: "<h2>Architecture</h2><p>Set priorities and migration phases.</p>",
-      url: undefined,
-      files: [],
-      children: [
-        {
-          id: crypto.randomUUID(),
-          title: "Navigation",
-          done: true,
-          content: "<p>Router and gesture stack are stable.</p>",
-          url: undefined,
-          files: [],
-          children: []
-        },
-        {
-          id: crypto.randomUUID(),
-          title: "Offline Sync",
-          done: false,
-          content: "<p>Conflict handling and retries pending.</p>",
+          content: "<p>Drag the left panel edge to make the project list wider or narrower.</p>",
           url: undefined,
           files: [],
           children: []
@@ -474,55 +422,55 @@ type EditorToolbarProps = {
 function EditorToolbar({ editor }: EditorToolbarProps) {
   if (!editor) return null;
 
-  const buttonClass = (isActive: boolean) =>
-    `toolbar-btn ${isActive ? "is-active" : ""}`;
+  const buttonClass = (isActive: boolean, tone: string) =>
+    ["toolbar-btn", tone, isActive ? "is-active" : ""].filter(Boolean).join(" ");
 
   return (
     <div className="editor-toolbar">
       <div className="toolbar-group">
-        <button className={buttonClass(editor.isActive("bold"))} onClick={() => editor.chain().focus().toggleBold().run()} title="Bold">
+        <button className={buttonClass(editor.isActive("bold"), "is-tone-rose")} onClick={() => editor.chain().focus().toggleBold().run()} title="Bold">
           <strong>B</strong>
         </button>
-        <button className={buttonClass(editor.isActive("italic"))} onClick={() => editor.chain().focus().toggleItalic().run()} title="Italic">
+        <button className={buttonClass(editor.isActive("italic"), "is-tone-coral")} onClick={() => editor.chain().focus().toggleItalic().run()} title="Italic">
           <em>I</em>
         </button>
-        <button className={buttonClass(editor.isActive("underline"))} onClick={() => editor.chain().focus().toggleUnderline().run()} title="Underline">
+        <button className={buttonClass(editor.isActive("underline"), "is-tone-sky")} onClick={() => editor.chain().focus().toggleUnderline().run()} title="Underline">
           <u>U</u>
         </button>
-        <button className={buttonClass(editor.isActive("strike"))} onClick={() => editor.chain().focus().toggleStrike().run()} title="Strikethrough">
+        <button className={buttonClass(editor.isActive("strike"), "is-tone-slate")} onClick={() => editor.chain().focus().toggleStrike().run()} title="Strikethrough">
           <s>S</s>
         </button>
       </div>
 
       <div className="toolbar-group">
-        <button className={buttonClass(editor.isActive("heading", { level: 1 }))} onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} title="Heading 1">
+        <button className={buttonClass(editor.isActive("heading", { level: 1 }), "is-tone-gold")} onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} title="Heading 1">
           H1
         </button>
-        <button className={buttonClass(editor.isActive("heading", { level: 2 }))} onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} title="Heading 2">
+        <button className={buttonClass(editor.isActive("heading", { level: 2 }), "is-tone-amber")} onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} title="Heading 2">
           H2
         </button>
-        <button className={buttonClass(editor.isActive("heading", { level: 3 }))} onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} title="Heading 3">
+        <button className={buttonClass(editor.isActive("heading", { level: 3 }), "is-tone-violet")} onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} title="Heading 3">
           H3
         </button>
       </div>
 
       <div className="toolbar-group">
-        <button className={buttonClass(editor.isActive("bulletList"))} onClick={() => editor.chain().focus().toggleBulletList().run()} title="Bullet list">
+        <button className={buttonClass(editor.isActive("bulletList"), "is-tone-mint")} onClick={() => editor.chain().focus().toggleBulletList().run()} title="Bullet list">
           •
         </button>
-        <button className={buttonClass(editor.isActive("orderedList"))} onClick={() => editor.chain().focus().toggleOrderedList().run()} title="Ordered list">
+        <button className={buttonClass(editor.isActive("orderedList"), "is-tone-lime")} onClick={() => editor.chain().focus().toggleOrderedList().run()} title="Ordered list">
           1.
         </button>
-        <button className={buttonClass(editor.isActive("blockquote"))} onClick={() => editor.chain().focus().toggleBlockquote().run()} title="Quote">
+        <button className={buttonClass(editor.isActive("blockquote"), "is-tone-peach")} onClick={() => editor.chain().focus().toggleBlockquote().run()} title="Quote">
           "
         </button>
-        <button className={buttonClass(editor.isActive("codeBlock"))} onClick={() => editor.chain().focus().toggleCodeBlock().run()} title="Code block">
+        <button className={buttonClass(editor.isActive("codeBlock"), "is-tone-indigo")} onClick={() => editor.chain().focus().toggleCodeBlock().run()} title="Code block">
           &lt;/&gt;
         </button>
       </div>
 
       <div className="toolbar-group">
-        <button onClick={() => editor.chain().focus().clearNodes().run()} title="Clear formatting">
+        <button className={buttonClass(false, "is-tone-neutral")} onClick={() => editor.chain().focus().clearNodes().run()} title="Clear formatting">
           <Eraser size={16} />
         </button>
       </div>
@@ -636,11 +584,17 @@ function NodeEditor({
     <section className="editor-shell">
       <header className="editor-header">
         <div className="editor-title-group">
-          <input
-            className="editor-title"
-            value={node.title}
-            onChange={(event) => onRename(event.target.value)}
-          />
+          <div className="editor-title-row">
+            <input
+              className="editor-title"
+              value={node.title}
+              onChange={(event) => onRename(event.target.value)}
+            />
+            <span className={`status-chip ${isComplete ? "is-done" : canToggleDone ? "is-open" : "is-parent"}`}>
+              {isComplete ? <BadgeCheck size={14} /> : canToggleDone ? <Clock size={14} /> : <CircleCheckBig size={14} />}
+              {isComplete ? "Done" : canToggleDone ? "Open" : "Parent"}
+            </span>
+          </div>
           <input
             type="url"
             className="editor-url"
@@ -653,17 +607,13 @@ function NodeEditor({
           <button className="ghost-btn" onClick={onAddChild}>
             <Plus size={16} /> Add child
           </button>
-          <span className={`status-chip ${isComplete ? "is-done" : canToggleDone ? "is-open" : "is-parent"}`}>
-            {isComplete ? <BadgeCheck size={14} /> : canToggleDone ? <Circle size={14} /> : <CircleCheckBig size={14} />}
-            {isComplete ? "Done" : canToggleDone ? "Open" : "Parent"}
-          </span>
           <button
             className={`done-btn ${isComplete ? "is-done" : ""}`}
             onClick={() => onToggleDone(!node.done)}
             disabled={!canToggleDone}
             title={canToggleDone ? "Toggle completion" : "Parent nodes complete automatically"}
           >
-            {isComplete ? <Check size={16} /> : <Circle size={16} />}
+            {isComplete ? <RotateCcw size={16} /> : <Check size={16} />}
             {isComplete ? "Reopen" : "Complete"}
           </button>
           <button className="delete-btn" onClick={onDelete} title="Delete to trash">
@@ -781,7 +731,48 @@ export default function App() {
   const [showTrash, setShowTrash] = useState(false);
   const [showCompletedProjects, setShowCompletedProjects] = useState(true);
   const [showDeletedProjects, setShowDeletedProjects] = useState(true);
+  const [projectPanelWidth, setProjectPanelWidth] = useState(300);
+  const [isResizingProjectPanel, setIsResizingProjectPanel] = useState(false);
   const saveTimeoutRef = useRef<number | null>(null);
+  const projectPanelResizeStartXRef = useRef(0);
+  const projectPanelResizeStartWidthRef = useRef(300);
+
+  useEffect(() => {
+    if (!isResizingProjectPanel) return;
+
+    const minWidth = 240;
+    const maxWidth = Math.floor(window.innerWidth / 2);
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const delta = event.clientX - projectPanelResizeStartXRef.current;
+      const nextWidth = projectPanelResizeStartWidthRef.current + delta;
+      setProjectPanelWidth(Math.min(maxWidth, Math.max(minWidth, nextWidth)));
+    };
+
+    const handlePointerUp = () => {
+      setIsResizingProjectPanel(false);
+    };
+
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+  }, [isResizingProjectPanel]);
+
+  const startProjectPanelResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+
+    projectPanelResizeStartXRef.current = event.clientX;
+    projectPanelResizeStartWidthRef.current = projectPanelWidth;
+    setIsResizingProjectPanel(true);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1176,11 +1167,28 @@ export default function App() {
     );
   };
 
+  if (!isHydrated) {
+    return (
+      <div className="loading-screen" aria-busy="true" aria-live="polite">
+        <div className="loading-card">
+          <p className="loading-kicker">Arbory</p>
+          <h1>Loading your workspace</h1>
+          <p>Preparing notes, projects and saved state.</p>
+          <div className="loading-bar" />
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${isResizingProjectPanel ? "is-resizing-project-panel" : ""}`} style={{ ["--project-panel-width" as string]: `${projectPanelWidth}px` }}>
       <aside className="project-panel">
         <div className="panel-header">
-          <h1>Notion Forest</h1>
+          <div className="panel-brand-row">
+            <div className="panel-brand-title">
+              <h1>Arbory</h1>
+            </div>
+          </div>
           <button className="solid-btn" onClick={addProject}>
             <Plus size={16} /> New project
           </button>
@@ -1194,7 +1202,6 @@ export default function App() {
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
           />
-
           {globalSearchResults && searchQuery.trim() && (
             <div className="search-results search-results-sidebar">
               <p className="search-results-header">
@@ -1278,7 +1285,7 @@ export default function App() {
         </div>
 
         {sortedCompletedProjectViews.length > 0 && (
-          <div className="project-section">
+          <div className="project-section project-section-completed">
             <button
               className="project-section-toggle"
               onClick={() => setShowCompletedProjects(!showCompletedProjects)}
@@ -1404,6 +1411,13 @@ export default function App() {
             )}
           </div>
         )}
+        <div
+          className="panel-resizer"
+          onPointerDown={startProjectPanelResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize left panel"
+        />
       </aside>
 
       <main className="tree-panel">
