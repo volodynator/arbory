@@ -96,6 +96,69 @@ textarea:focus-visible {
   gap: 10px;
 }
 
+.update-banner {
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(140, 61, 76, 0.16);
+  background: linear-gradient(140deg, rgba(255, 255, 255, 0.94), rgba(244, 231, 219, 0.94));
+  box-shadow: 0 14px 24px rgba(29, 29, 31, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.update-banner-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.update-banner-head strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.95rem;
+}
+
+.update-banner-copy {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.update-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.update-banner-downloading {
+  border-color: rgba(209, 139, 43, 0.22);
+}
+
+.update-banner-installed {
+  border-color: rgba(44, 140, 107, 0.22);
+}
+
+.update-banner-error {
+  border-color: rgba(194, 78, 95, 0.22);
+}
+
+.update-progress-track {
+  height: 9px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(31, 40, 51, 0.08);
+}
+
+.update-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #2c8c6b, #d18b2b);
+  transition: width 160ms ease;
+}
+
 .panel-resizer {
   position: absolute;
   right: -6px;
@@ -718,6 +781,12 @@ textarea:focus-visible {
   background: rgba(107, 114, 128, 0.12);
   color: #5b6472;
   border-color: rgba(107, 114, 128, 0.16);
+}
+
+.status-chip.is-error {
+  background: rgba(194, 78, 95, 0.12);
+  color: #8a2f40;
+  border-color: rgba(194, 78, 95, 0.18);
 }
 .tree-item {
   position: relative;

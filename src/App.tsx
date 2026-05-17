@@ -6,6 +6,7 @@ import Underline from "@tiptap/extension-underline";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { createLowlight, common } from "lowlight";
 import { BadgeCheck, Check, ChevronDown, Circle, CircleCheckBig, Clock, Eraser, File, FileArchive, FileCode2, FileImage, FileText, Film, Link2, Paperclip, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { check } from "@tauri-apps/plugin-updater";
 
 type TreeNode = {
   id: string;
@@ -57,6 +58,9 @@ type PersistedWorkspace = {
   activeProjectId: string;
   selectedNodeId: string;
 };
+
+type AvailableUpdate = NonNullable<Awaited<ReturnType<typeof check>>>;
+type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "installed" | "error";
 
 const APP_STORAGE_DIR = "notion-forest";
 const PROJECTS_FILE = "projects.json";
@@ -758,6 +762,10 @@ export default function App() {
   const [selectedNodeId, setSelectedNodeId] = useState(initialProjects[0].tree.id);
   const [isHydrated, setIsHydrated] = useState(false);
   const [storageStatus, setStorageStatus] = useState<StorageStatus>("loading");
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("checking");
+  const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null);
+  const [updateMessage, setUpdateMessage] = useState("");
+  const [updateProgress, setUpdateProgress] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(new Set());
   const [showTrash, setShowTrash] = useState(false);
@@ -768,6 +776,73 @@ export default function App() {
   const saveTimeoutRef = useRef<number | null>(null);
   const projectPanelResizeStartXRef = useRef(0);
   const projectPanelResizeStartWidthRef = useRef(300);
+
+  const refreshUpdateStatus = async () => {
+    setUpdateStatus("checking");
+    setUpdateMessage("Checking GitHub releases...");
+    setUpdateProgress(0);
+
+    try {
+      const update = await check({ timeout: 10000 });
+
+      if (update) {
+        setAvailableUpdate(update);
+        setUpdateStatus("available");
+        setUpdateMessage(update.body?.trim() ? update.body.trim() : `Version ${update.version} is available.`);
+        return;
+      }
+
+      setAvailableUpdate(null);
+      setUpdateStatus("idle");
+      setUpdateMessage("");
+    } catch (error) {
+      console.warn("Update check failed", error);
+      setAvailableUpdate(null);
+      setUpdateStatus("idle");
+      setUpdateMessage("");
+    }
+  };
+
+  const installAvailableUpdate = async () => {
+    if (!availableUpdate || updateStatus === "downloading") return;
+
+    setUpdateStatus("downloading");
+    setUpdateMessage(`Downloading ${availableUpdate.version}...`);
+    setUpdateProgress(0);
+
+    try {
+      let downloaded = 0;
+      let contentLength = 0;
+
+      await availableUpdate.downloadAndInstall((event) => {
+        switch (event.event) {
+          case "Started":
+            contentLength = event.data.contentLength;
+            downloaded = 0;
+            setUpdateProgress(0);
+            setUpdateMessage(`Downloading ${availableUpdate.version}...`);
+            break;
+          case "Progress":
+            downloaded += event.data.chunkLength;
+            if (contentLength > 0) {
+              setUpdateProgress(Math.round((downloaded / contentLength) * 100));
+            }
+            break;
+          case "Finished":
+            setUpdateProgress(100);
+            setUpdateMessage("Installing update...");
+            break;
+        }
+      });
+
+      setUpdateStatus("installed");
+      setUpdateMessage(`Version ${availableUpdate.version} installed. Restart the app to finish.`);
+    } catch (error) {
+      console.error("Failed to install update", error);
+      setUpdateStatus("error");
+      setUpdateMessage(error instanceof Error ? error.message : "Failed to install update.");
+    }
+  };
 
   useEffect(() => {
     if (!isResizingProjectPanel) return;
@@ -841,6 +916,40 @@ export default function App() {
     };
 
     loadData();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const checkForUpdate = async () => {
+      try {
+        const update = await check({ timeout: 10000 });
+
+        if (cancelled) return;
+
+        if (update) {
+          setAvailableUpdate(update);
+          setUpdateStatus("available");
+          setUpdateMessage(update.body?.trim() ? update.body.trim() : `Version ${update.version} is available.`);
+          return;
+        }
+
+        setAvailableUpdate(null);
+        setUpdateStatus("idle");
+        setUpdateMessage("");
+      } catch (error) {
+        if (cancelled) return;
+        setAvailableUpdate(null);
+        setUpdateStatus("idle");
+        setUpdateMessage("");
+      }
+    };
+
+    void checkForUpdate();
 
     return () => {
       cancelled = true;
@@ -1225,6 +1334,67 @@ export default function App() {
             <Plus size={16} /> New project
           </button>
         </div>
+
+        {updateStatus !== "idle" && (
+          <div className={`update-banner update-banner-${updateStatus}`}>
+            <div className="update-banner-head">
+              <div>
+                <p className="meta-label">App updates</p>
+                <strong>
+                  {updateStatus === "checking" && "Checking GitHub releases"}
+                  {updateStatus === "available" && `Version ${availableUpdate?.version} is ready`}
+                  {updateStatus === "downloading" && `Installing ${availableUpdate?.version}`}
+                  {updateStatus === "installed" && "Update installed"}
+                  {updateStatus === "error" && "Update check failed"}
+                </strong>
+              </div>
+              <span
+                className={`status-chip ${
+                  updateStatus === "available"
+                    ? "is-open"
+                    : updateStatus === "downloading"
+                      ? "is-parent"
+                      : updateStatus === "installed"
+                        ? "is-done"
+                        : "is-error"
+                }`}
+              >
+                {updateStatus === "checking"
+                  ? "Checking"
+                  : updateStatus === "available"
+                    ? "Update ready"
+                    : updateStatus === "downloading"
+                      ? `${updateProgress}%`
+                      : updateStatus === "installed"
+                        ? "Installed"
+                        : "Retry"}
+              </span>
+            </div>
+            {updateMessage && <p className="update-banner-copy">{updateMessage}</p>}
+            {updateStatus === "available" && availableUpdate && (
+              <div className="update-banner-actions">
+                <button className="solid-btn" onClick={installAvailableUpdate}>
+                  Install update
+                </button>
+                <button className="ghost-btn" onClick={refreshUpdateStatus}>
+                  Check again
+                </button>
+              </div>
+            )}
+            {updateStatus === "downloading" && (
+              <div className="update-progress-track" aria-hidden="true">
+                <span className="update-progress-fill" style={{ width: `${updateProgress}%` }} />
+              </div>
+            )}
+            {updateStatus === "error" && (
+              <div className="update-banner-actions">
+                <button className="ghost-btn" onClick={refreshUpdateStatus}>
+                  Retry
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="project-search">
           <input
