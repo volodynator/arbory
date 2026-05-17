@@ -1,0 +1,1453 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { EditorContent, useEditor } from "@tiptap/react";
+import Link from "@tiptap/extension-link";
+import StarterKit from "@tiptap/starter-kit";
+import Underline from "@tiptap/extension-underline";
+import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
+import { createLowlight, common } from "lowlight";
+import { BadgeCheck, Check, ChevronDown, Circle, CircleCheckBig, Eraser, File, FileArchive, FileCode2, FileImage, FileText, Film, Link2, Paperclip, Plus, RotateCcw, Trash2, X } from "lucide-react";
+
+type TreeNode = {
+  id: string;
+  title: string;
+  done: boolean;
+  content: string;
+  url?: string;
+  files: { name: string; size: number; data: string }[];
+  children: TreeNode[];
+};
+
+type Project = {
+  id: string;
+  name: string;
+  tree: TreeNode;
+  trash: TreeNode[];
+  deleted?: boolean;
+};
+
+type WorkspacePayload = {
+  projects: Project[];
+  activeProjectId: string;
+  selectedNodeId: string;
+};
+
+type StorageStatus = "loading" | "saving" | "saved" | "error";
+
+type PersistedTreeNode = {
+  id: string;
+  title: string;
+  done: boolean;
+  noteFile: string;
+  url?: string;
+  filesDir?: string;
+  files: { name: string; size: number; data: string }[];
+  children: PersistedTreeNode[];
+};
+
+type PersistedProject = {
+  id: string;
+  name: string;
+  tree: PersistedTreeNode;
+  trash: PersistedTreeNode[];
+  deleted: boolean;
+};
+
+type PersistedWorkspace = {
+  projects: PersistedProject[];
+  activeProjectId: string;
+  selectedNodeId: string;
+};
+
+const APP_STORAGE_DIR = "notion-forest";
+const PROJECTS_FILE = "projects.json";
+
+const supportsOpfs = () => {
+  return typeof navigator !== "undefined" && "storage" in navigator && typeof navigator.storage.getDirectory === "function";
+};
+
+const safeNoteFilename = (nodeId: string) => {
+  const cleaned = nodeId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return `${cleaned || "note"}.html`;
+};
+
+const writeTextFile = async (fileHandle: FileSystemFileHandle, content: string) => {
+  const writable = await fileHandle.createWritable();
+  await writable.write(content);
+  await writable.close();
+};
+
+const readTextFile = async (dir: FileSystemDirectoryHandle, filePath: string) => {
+  const segments = filePath.split("/").filter(Boolean);
+  let cursor: FileSystemDirectoryHandle = dir;
+
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    cursor = await cursor.getDirectoryHandle(segments[i]);
+  }
+
+  const fileHandle = await cursor.getFileHandle(segments[segments.length - 1]);
+  const file = await fileHandle.getFile();
+  return file.text();
+};
+
+const getStorageFolders = async () => {
+  if (!supportsOpfs()) {
+    throw new Error("Browser storage API is not available in this runtime");
+  }
+
+  const storage = navigator.storage as StorageManager & {
+    getDirectory: () => Promise<FileSystemDirectoryHandle>;
+  };
+  const root = await storage.getDirectory();
+  const appDir = await root.getDirectoryHandle(APP_STORAGE_DIR, { create: true });
+  const notesDir = await appDir.getDirectoryHandle("notes", { create: true });
+
+  return { appDir, notesDir };
+};
+
+const persistNode = async (
+  node: TreeNode,
+  notesDir: FileSystemDirectoryHandle
+): Promise<PersistedTreeNode> => {
+  const fileName = safeNoteFilename(node.id);
+  const fileHandle = await notesDir.getFileHandle(fileName, { create: true });
+  await writeTextFile(fileHandle, node.content);
+
+  const children: PersistedTreeNode[] = [];
+  for (const child of node.children) {
+    children.push(await persistNode(child, notesDir));
+  }
+
+  return {
+    id: node.id,
+    title: node.title,
+    done: node.done,
+    noteFile: `notes/${fileName}`,
+    url: node.url,
+    files: node.files,
+    children
+  };
+};
+
+const hydrateNode = async (
+  node: PersistedTreeNode,
+  appDir: FileSystemDirectoryHandle
+): Promise<TreeNode> => {
+  let content = "<p></p>";
+  try {
+    content = await readTextFile(appDir, node.noteFile);
+  } catch {
+    content = "<p></p>";
+  }
+
+  const children: TreeNode[] = [];
+  for (const child of node.children) {
+    children.push(await hydrateNode(child, appDir));
+  }
+
+  return {
+    id: node.id,
+    title: node.title,
+    done: node.done,
+    content,
+    url: node.url,
+    files: node.files ?? [],
+    children
+  };
+};
+
+const saveWorkspaceToFiles = async (payload: WorkspacePayload) => {
+  const { appDir, notesDir } = await getStorageFolders();
+
+  const persistedProjects: PersistedProject[] = [];
+  for (const project of payload.projects) {
+    const trashPersistedNodes: PersistedTreeNode[] = [];
+    for (const trashNode of project.trash) {
+      trashPersistedNodes.push(await persistNode(trashNode, notesDir));
+    }
+
+    persistedProjects.push({
+      id: project.id,
+      name: project.name,
+      tree: await persistNode(project.tree, notesDir),
+      trash: trashPersistedNodes,
+      deleted: project.deleted === true
+    });
+  }
+
+  const persisted: PersistedWorkspace = {
+    projects: persistedProjects,
+    activeProjectId: payload.activeProjectId,
+    selectedNodeId: payload.selectedNodeId
+  };
+
+  const projectsHandle = await appDir.getFileHandle(PROJECTS_FILE, { create: true });
+  await writeTextFile(projectsHandle, JSON.stringify(persisted, null, 2));
+};
+
+const loadWorkspaceFromFiles = async (): Promise<WorkspacePayload | null> => {
+  const { appDir } = await getStorageFolders();
+
+  let persisted: PersistedWorkspace;
+  try {
+    const projectsHandle = await appDir.getFileHandle(PROJECTS_FILE);
+    const json = await (await projectsHandle.getFile()).text();
+    persisted = JSON.parse(json) as PersistedWorkspace;
+  } catch {
+    return null;
+  }
+
+  const projects: Project[] = [];
+  for (const project of persisted.projects) {
+    const trashNodes: TreeNode[] = [];
+    if (project.trash && Array.isArray(project.trash)) {
+      for (const trashNode of project.trash) {
+        trashNodes.push(await hydrateNode(trashNode, appDir));
+      }
+    }
+
+    projects.push({
+      id: project.id,
+      name: project.name,
+      tree: await hydrateNode(project.tree, appDir),
+      trash: trashNodes,
+      deleted: project.deleted ?? false
+    });
+  }
+
+  return {
+    projects,
+    activeProjectId: persisted.activeProjectId,
+    selectedNodeId: persisted.selectedNodeId
+  };
+};
+
+const createNode = (title: string): TreeNode => ({
+  id: crypto.randomUUID(),
+  title,
+  done: false,
+  content: `<h2>${title}</h2><p>Start writing notes, decisions and task details here.</p>`,
+  url: undefined,
+  files: [],
+  children: []
+});
+
+const isNodeComplete = (node: TreeNode): boolean => {
+  if (node.children.length === 0) return node.done;
+  return node.children.every(isNodeComplete);
+};
+
+const subtreeCompletion = (node: TreeNode): { done: number; total: number } => {
+  const selfDone = isNodeComplete(node) ? 1 : 0;
+  const fromChildren = node.children.reduce(
+    (acc, child) => {
+      const childResult = subtreeCompletion(child);
+      return {
+        done: acc.done + childResult.done,
+        total: acc.total + childResult.total
+      };
+    },
+    { done: 0, total: 0 }
+  );
+
+  return {
+    done: selfDone + fromChildren.done,
+    total: 1 + fromChildren.total
+  };
+};
+
+const getProjectCompletionPercent = (project: Project) => {
+  const stats = subtreeCompletion(project.tree);
+  return Math.round((stats.done / stats.total) * 100);
+};
+
+const updateNodeById = (
+  node: TreeNode,
+  targetId: string,
+  updateFn: (node: TreeNode) => TreeNode
+): TreeNode => {
+  if (node.id === targetId) return updateFn(node);
+
+  return {
+    ...node,
+    children: node.children.map((child) => updateNodeById(child, targetId, updateFn))
+  };
+};
+
+const findNodeById = (node: TreeNode, targetId: string): TreeNode | null => {
+  if (node.id === targetId) return node;
+
+  for (const child of node.children) {
+    const found = findNodeById(child, targetId);
+    if (found) return found;
+  }
+
+  return null;
+};
+
+const initialProjects: Project[] = [
+  {
+    id: crypto.randomUUID(),
+    name: "Product Launch",
+    tree: {
+      id: crypto.randomUUID(),
+      title: "Launch Q3 Product",
+      done: false,
+      content: "<h2>Launch Strategy</h2><p>Define milestones, owners and launch dates.</p>",
+      url: undefined,
+      files: [],
+      children: [
+        {
+          id: crypto.randomUUID(),
+          title: "Design Assets",
+          done: true,
+          content: "<p>Finalize hero visuals and social templates.</p>",
+          url: undefined,
+          files: [],
+          children: []
+        },
+        {
+          id: crypto.randomUUID(),
+          title: "Marketing Plan",
+          done: false,
+          content: "<p>Write campaign brief and channel calendar.</p>",
+          url: undefined,
+          files: [],
+          children: []
+        },
+        {
+          id: crypto.randomUUID(),
+          title: "Technical Readiness",
+          done: false,
+          content: "<p>Performance pass, QA checklist and rollback plan.</p>",
+          url: undefined,
+          files: [],
+          children: [
+            {
+              id: crypto.randomUUID(),
+              title: "QA Regression",
+              done: true,
+              content: "<p>All critical flows tested.</p>",
+              url: undefined,
+              files: [],
+              children: []
+            },
+            {
+              id: crypto.randomUUID(),
+              title: "Final UAT",
+              done: false,
+              content: "<p>Schedule final product walkthrough.</p>",
+              url: undefined,
+              files: [],
+              children: []
+            }
+          ]
+        }
+      ]
+    },
+    trash: []
+  },
+  {
+    id: crypto.randomUUID(),
+    name: "Mobile App",
+    tree: {
+      id: crypto.randomUUID(),
+      title: "Mobile Rewrite",
+      done: false,
+      content: "<h2>Architecture</h2><p>Set priorities and migration phases.</p>",
+      url: undefined,
+      files: [],
+      children: [
+        {
+          id: crypto.randomUUID(),
+          title: "Navigation",
+          done: true,
+          content: "<p>Router and gesture stack are stable.</p>",
+          url: undefined,
+          files: [],
+          children: []
+        },
+        {
+          id: crypto.randomUUID(),
+          title: "Offline Sync",
+          done: false,
+          content: "<p>Conflict handling and retries pending.</p>",
+          url: undefined,
+          files: [],
+          children: []
+        }
+      ]
+    },
+    trash: []
+  }
+];
+
+type TreeCardProps = {
+  node: TreeNode;
+  selectedId: string;
+  depth: number;
+  onSelect: (nodeId: string) => void;
+  collapsedNodes: Set<string>;
+  onToggleCollapse: (nodeId: string) => void;
+};
+
+function TreeCard({ node, selectedId, depth, onSelect, collapsedNodes, onToggleCollapse }: TreeCardProps) {
+  const done = isNodeComplete(node);
+  const completion = subtreeCompletion(node);
+  const percent = Math.round((completion.done / completion.total) * 100);
+  const isCollapsed = collapsedNodes.has(node.id);
+  const hasChildren = node.children.length > 0;
+
+  const handleTitleClick = (e: React.MouseEvent) => {
+    if (node.url) {
+      e.preventDefault();
+      window.open(node.url, "_blank");
+    } else {
+      onSelect(node.id);
+    }
+  };
+
+  return (
+    <li className="tree-item">
+      <div className={`tree-card ${selectedId === node.id ? "is-selected" : ""}`}>
+        <button className="tree-card-main" onClick={handleTitleClick}>
+          {hasChildren && (
+            <button
+              className={`collapse-btn ${isCollapsed ? "is-collapsed" : ""}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleCollapse(node.id);
+              }}
+              title={isCollapsed ? "Expand" : "Collapse"}
+            >
+              ▼
+            </button>
+          )}
+          {!hasChildren && <span className="collapse-spacer" />}
+          <span className={`status-dot ${done ? "is-done" : "is-open"}`} />
+          <span className="title-stack">
+            <span className={`task-title ${node.url ? "has-link" : ""}`}>
+              {node.url && <Link2 className="link-icon" size={14} />}
+              {node.title}
+            </span>
+            <span className="task-meta">{percent}% complete</span>
+          </span>
+          <span className="task-badge">{completion.done}/{completion.total}</span>
+        </button>
+      </div>
+      {hasChildren && !isCollapsed && (
+        <ul className="tree-children">
+          {node.children.map((child) => (
+            <TreeCard
+              key={child.id}
+              node={child}
+              selectedId={selectedId}
+              depth={depth + 1}
+              onSelect={onSelect}
+              collapsedNodes={collapsedNodes}
+              onToggleCollapse={onToggleCollapse}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+type NodeEditorProps = {
+  node: TreeNode;
+  canToggleDone: boolean;
+  isComplete: boolean;
+  onRename: (newTitle: string) => void;
+  onToggleDone: (value: boolean) => void;
+  onAddChild: () => void;
+  onContentChange: (html: string) => void;
+  onUrlChange: (url: string) => void;
+  onDelete: () => void;
+  onAddFile: (file: File) => void;
+  onRemoveFile: (fileName: string) => void;
+};
+
+type EditorToolbarProps = {
+  editor: ReturnType<typeof useEditor> | null;
+};
+
+function EditorToolbar({ editor }: EditorToolbarProps) {
+  if (!editor) return null;
+
+  const buttonClass = (isActive: boolean) =>
+    `toolbar-btn ${isActive ? "is-active" : ""}`;
+
+  return (
+    <div className="editor-toolbar">
+      <div className="toolbar-group">
+        <button className={buttonClass(editor.isActive("bold"))} onClick={() => editor.chain().focus().toggleBold().run()} title="Bold">
+          <strong>B</strong>
+        </button>
+        <button className={buttonClass(editor.isActive("italic"))} onClick={() => editor.chain().focus().toggleItalic().run()} title="Italic">
+          <em>I</em>
+        </button>
+        <button className={buttonClass(editor.isActive("underline"))} onClick={() => editor.chain().focus().toggleUnderline().run()} title="Underline">
+          <u>U</u>
+        </button>
+        <button className={buttonClass(editor.isActive("strike"))} onClick={() => editor.chain().focus().toggleStrike().run()} title="Strikethrough">
+          <s>S</s>
+        </button>
+      </div>
+
+      <div className="toolbar-group">
+        <button className={buttonClass(editor.isActive("heading", { level: 1 }))} onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} title="Heading 1">
+          H1
+        </button>
+        <button className={buttonClass(editor.isActive("heading", { level: 2 }))} onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} title="Heading 2">
+          H2
+        </button>
+        <button className={buttonClass(editor.isActive("heading", { level: 3 }))} onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} title="Heading 3">
+          H3
+        </button>
+      </div>
+
+      <div className="toolbar-group">
+        <button className={buttonClass(editor.isActive("bulletList"))} onClick={() => editor.chain().focus().toggleBulletList().run()} title="Bullet list">
+          •
+        </button>
+        <button className={buttonClass(editor.isActive("orderedList"))} onClick={() => editor.chain().focus().toggleOrderedList().run()} title="Ordered list">
+          1.
+        </button>
+        <button className={buttonClass(editor.isActive("blockquote"))} onClick={() => editor.chain().focus().toggleBlockquote().run()} title="Quote">
+          "
+        </button>
+        <button className={buttonClass(editor.isActive("codeBlock"))} onClick={() => editor.chain().focus().toggleCodeBlock().run()} title="Code block">
+          &lt;/&gt;
+        </button>
+      </div>
+
+      <div className="toolbar-group">
+        <button onClick={() => editor.chain().focus().clearNodes().run()} title="Clear formatting">
+          <Eraser size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function NodeEditor({
+  node,
+  canToggleDone,
+  isComplete,
+  onRename,
+  onToggleDone,
+  onAddChild,
+  onContentChange,
+  onUrlChange,
+  onDelete,
+  onAddFile,
+  onRemoveFile
+}: NodeEditorProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const lowlight = createLowlight(common);
+
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        codeBlock: false
+      }),
+      Underline,
+      CodeBlockLowlight.configure({
+        lowlight
+      }),
+      Link.configure({
+        openOnClick: false,
+        autolink: true,
+        defaultProtocol: "https"
+      })
+    ],
+    content: node.content,
+    onUpdate: ({ editor: currentEditor }) => {
+      onContentChange(currentEditor.getHTML());
+    },
+    editorProps: {
+      attributes: {
+        class: "note-editor"
+      }
+    }
+  });
+
+  if (editor && node.content !== editor.getHTML()) {
+    editor.commands.setContent(node.content, { emitUpdate: false } as Parameters<typeof editor.commands.setContent>[1]);
+  }
+
+  const getFileIcon = (fileName: string) => {
+    const ext = fileName.split(".").pop()?.toLowerCase() || "";
+    const iconMap: { [key: string]: string } = {
+      pdf: "📄",
+      doc: "📝",
+      docx: "📝",
+      xls: "📊",
+      xlsx: "📊",
+      ppt: "📈",
+      pptx: "📈",
+      txt: "📋",
+      jpg: "🖼️",
+      jpeg: "🖼️",
+      png: "🖼️",
+      gif: "🖼️",
+      mp3: "🎵",
+      mp4: "🎬",
+      zip: "🗂️"
+    };
+    return iconMap[ext] || <Paperclip size={16} />;
+  };
+
+  const renderAttachmentIcon = (fileName: string) => {
+    const ext = fileName.split(".").pop()?.toLowerCase() || "";
+
+    if (["png", "jpg", "jpeg", "gif", "webp", "svg", "heic"].includes(ext)) {
+      return <FileImage size={16} />;
+    }
+
+    if (["mp4", "mov", "webm", "mkv"].includes(ext)) {
+      return <Film size={16} />;
+    }
+
+    if (["zip", "rar", "7z", "tar", "gz"].includes(ext)) {
+      return <FileArchive size={16} />;
+    }
+
+    if (["js", "ts", "tsx", "jsx", "json", "css", "html", "md", "xml"].includes(ext)) {
+      return <FileCode2 size={16} />;
+    }
+
+    if (["txt", "pdf", "doc", "docx"].includes(ext)) {
+      return <FileText size={16} />;
+    }
+
+    return <File size={16} />;
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + " " + sizes[i];
+  };
+
+  return (
+    <section className="editor-shell">
+      <header className="editor-header">
+        <div className="editor-title-group">
+          <input
+            className="editor-title"
+            value={node.title}
+            onChange={(event) => onRename(event.target.value)}
+          />
+          <input
+            type="url"
+            className="editor-url"
+            placeholder="Link to resource..."
+            value={node.url || ""}
+            onChange={(event) => onUrlChange(event.target.value)}
+          />
+        </div>
+        <div className="editor-actions">
+          <button className="ghost-btn" onClick={onAddChild}>
+            <Plus size={16} /> Add child
+          </button>
+          <span className={`status-chip ${isComplete ? "is-done" : canToggleDone ? "is-open" : "is-parent"}`}>
+            {isComplete ? <BadgeCheck size={14} /> : canToggleDone ? <Circle size={14} /> : <CircleCheckBig size={14} />}
+            {isComplete ? "Done" : canToggleDone ? "Open" : "Parent"}
+          </span>
+          <button
+            className={`done-btn ${isComplete ? "is-done" : ""}`}
+            onClick={() => onToggleDone(!node.done)}
+            disabled={!canToggleDone}
+            title={canToggleDone ? "Toggle completion" : "Parent nodes complete automatically"}
+          >
+            {isComplete ? <Check size={16} /> : <Circle size={16} />}
+            {isComplete ? "Reopen" : "Complete"}
+          </button>
+          <button className="delete-btn" onClick={onDelete} title="Delete to trash">
+            <Trash2 size={16} />
+          </button>
+        </div>
+      </header>
+      {!canToggleDone && (
+        <p className="editor-hint">
+          This is a parent node. It will become complete automatically when all child nodes are complete.
+        </p>
+      )}
+      <EditorToolbar editor={editor} />
+      <EditorContent editor={editor} />
+
+      <div className="editor-files">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          style={{ display: "none" }}
+          onChange={(e) => {
+            for (const file of e.currentTarget.files || []) {
+              onAddFile(file);
+            }
+          }}
+        />
+        <button 
+          className="file-add-btn"
+          onClick={() => fileInputRef.current?.click()}
+          title="Attach files"
+        >
+          <Paperclip size={16} /> Attach files
+        </button>
+        {node.files.length > 0 && (
+          <div className="file-attachments">
+            {node.files.map((file) => (
+              <div key={file.name} className="file-attachment">
+                <a
+                  href={file.data}
+                  download={file.name}
+                  className="file-attachment-link"
+                  title={`${file.name} (${formatFileSize(file.size)})`}
+                >
+                  <span className="file-attachment-icon">{renderAttachmentIcon(file.name)}</span>
+                  <span className="file-attachment-name">{file.name}</span>
+                </a>
+                <button
+                  className="file-attachment-remove"
+                  onClick={() => onRemoveFile(file.name)}
+                  title="Remove file"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+const filterNodesBySearch = (node: TreeNode, query: string): TreeNode | null => {
+  const lowerQuery = query.toLowerCase();
+  const matchesTitle = node.title.toLowerCase().includes(lowerQuery);
+  const matchesContent = node.content.toLowerCase().includes(lowerQuery);
+  const matches = matchesTitle || matchesContent;
+
+  const filteredChildren: TreeNode[] = [];
+  for (const child of node.children) {
+    const filtered = filterNodesBySearch(child, query);
+    if (filtered) {
+      filteredChildren.push(filtered);
+    }
+  }
+
+  if (matches || filteredChildren.length > 0) {
+    return {
+      ...node,
+      children: filteredChildren
+    };
+  }
+
+  return null;
+};
+
+const searchAllProjects = (projects: Project[], query: string) => {
+  if (!query.trim()) return null;
+
+  const results: Array<{ projectId: string; projectName: string; node: TreeNode }> = [];
+
+  for (const project of projects) {
+    const filtered = filterNodesBySearch(project.tree, query);
+    if (filtered) {
+      results.push({
+        projectId: project.id,
+        projectName: project.name,
+        node: filtered
+      });
+    }
+  }
+
+  return results.length > 0 ? results : null;
+};
+
+export default function App() {
+  const [projects, setProjects] = useState<Project[]>(initialProjects);
+  const [activeProjectId, setActiveProjectId] = useState(initialProjects[0].id);
+  const [selectedNodeId, setSelectedNodeId] = useState(initialProjects[0].tree.id);
+  const [isHydrated, setIsHydrated] = useState(false);
+  const [storageStatus, setStorageStatus] = useState<StorageStatus>("loading");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(new Set());
+  const [showTrash, setShowTrash] = useState(false);
+  const [showCompletedProjects, setShowCompletedProjects] = useState(true);
+  const [showDeletedProjects, setShowDeletedProjects] = useState(true);
+  const saveTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadData = async () => {
+      if (!supportsOpfs()) {
+        if (!cancelled) {
+          setStorageStatus("error");
+          setIsHydrated(true);
+        }
+        return;
+      }
+
+      try {
+        const saved = await loadWorkspaceFromFiles();
+
+        if (!cancelled && saved && saved.projects.length > 0) {
+          setProjects(saved.projects);
+          setActiveProjectId(saved.activeProjectId);
+          setSelectedNodeId(saved.selectedNodeId);
+        }
+
+        if (!cancelled) {
+          setStorageStatus("saved");
+          setIsHydrated(true);
+        }
+      } catch (error) {
+        console.error("Failed to load workspace data", error);
+        if (!cancelled) {
+          setStorageStatus("error");
+          setIsHydrated(true);
+        }
+      }
+    };
+
+    loadData();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const activeProject = useMemo(
+    () =>
+      projects.find((project) => project.id === activeProjectId && project.deleted !== true) ??
+      projects.find((project) => project.deleted !== true) ??
+      projects[0],
+    [projects, activeProjectId]
+  );
+
+  const selectedNode = useMemo(
+    () => findNodeById(activeProject.tree, selectedNodeId) ?? activeProject.tree,
+    [activeProject, selectedNodeId]
+  );
+
+  const projectViews = useMemo(
+    () =>
+      projects.map((project) => ({
+        project,
+        percent: getProjectCompletionPercent(project)
+      })),
+    [projects]
+  );
+
+  const visibleProjectViews = useMemo(
+    () => projectViews.filter((entry) => !entry.project.deleted),
+    [projectViews]
+  );
+
+  const activeProjectViews = useMemo(
+    () => visibleProjectViews.filter((entry) => entry.percent < 100),
+    [visibleProjectViews]
+  );
+
+  const completedProjectViews = useMemo(
+    () => visibleProjectViews.filter((entry) => entry.percent >= 100),
+    [visibleProjectViews]
+  );
+
+  const deletedProjectViews = useMemo(
+    () => projectViews.filter((entry) => entry.project.deleted),
+    [projectViews]
+  );
+
+  const sortedActiveProjectViews = useMemo(
+    () => [...activeProjectViews].sort((left, right) => right.percent - left.percent),
+    [activeProjectViews]
+  );
+
+  const sortedCompletedProjectViews = useMemo(
+    () => [...completedProjectViews].sort((left, right) => right.percent - left.percent),
+    [completedProjectViews]
+  );
+
+  const sortedDeletedProjectViews = useMemo(
+    () => [...deletedProjectViews].sort((left, right) => right.percent - left.percent),
+    [deletedProjectViews]
+  );
+
+  const displayTree = activeProject.tree;
+
+  const globalSearchResults = useMemo(() => {
+    if (!searchQuery.trim()) return null;
+    
+    return searchAllProjects(projects, searchQuery);
+  }, [projects, searchQuery]);
+
+  useEffect(() => {
+    if (saveTimeoutRef.current !== null) {
+      window.clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
+
+    if (!isHydrated) return;
+
+    setStorageStatus("saving");
+    saveTimeoutRef.current = window.setTimeout(async () => {
+      try {
+        await saveWorkspaceToFiles({
+          projects,
+          activeProjectId,
+          selectedNodeId
+        });
+        setStorageStatus("saved");
+      } catch (error) {
+        console.error("Failed to save workspace data", error);
+        setStorageStatus("error");
+      }
+    }, 350);
+
+    return () => {
+      if (saveTimeoutRef.current !== null) {
+        window.clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
+    };
+  }, [projects, activeProjectId, selectedNodeId, isHydrated]);
+
+  const projectStats = useMemo(() => subtreeCompletion(activeProject.tree), [activeProject]);
+  const projectPercent = Math.round((projectStats.done / projectStats.total) * 100);
+  const canDeleteCurrentProject = visibleProjectViews.length > 1;
+
+  const updateActiveProjectTree = (updater: (tree: TreeNode) => TreeNode) => {
+    setProjects((current) =>
+      current.map((project) =>
+        project.id === activeProject.id
+          ? {
+              ...project,
+              tree: updater(project.tree)
+            }
+          : project
+      )
+    );
+  };
+
+  const addProject = () => {
+    const root = createNode("New project root");
+    const newProject: Project = {
+      id: crypto.randomUUID(),
+      name: `Project ${projects.length + 1}`,
+      tree: root,
+      trash: [],
+      deleted: false
+    };
+
+    setProjects((current) => [...current, newProject]);
+    setActiveProjectId(newProject.id);
+    setSelectedNodeId(root.id);
+  };
+
+  const renameProject = (projectId: string, name: string) => {
+    setProjects((current) =>
+      current.map((project) => (project.id === projectId ? { ...project, name } : project))
+    );
+  };
+
+  const deleteProject = (projectId: string) => {
+    const targetProject = projects.find((project) => project.id === projectId && !project.deleted);
+    if (!targetProject || !canDeleteCurrentProject) return;
+
+    const nextActiveProject =
+      visibleProjectViews.find((entry) => entry.project.id !== projectId)?.project ??
+      visibleProjectViews[0]?.project;
+
+    setProjects((current) =>
+      current.map((project) =>
+        project.id === projectId
+          ? {
+              ...project,
+              deleted: true
+            }
+          : project
+      )
+    );
+
+    if (activeProjectId === projectId && nextActiveProject) {
+      setActiveProjectId(nextActiveProject.id);
+      setSelectedNodeId(nextActiveProject.tree.id);
+    }
+  };
+
+  const restoreProject = (projectId: string) => {
+    const restored = projects.find((project) => project.id === projectId);
+    if (!restored) return;
+
+    setProjects((current) =>
+      current.map((project) =>
+        project.id === projectId
+          ? {
+              ...project,
+              deleted: false
+            }
+          : project
+      )
+    );
+
+    setActiveProjectId(projectId);
+    setSelectedNodeId(restored.tree.id);
+  };
+
+  const emptyDeletedProjects = () => {
+    setProjects((current) => current.filter((project) => !project.deleted));
+
+    if (!projects.some((project) => project.id === activeProjectId && project.deleted)) return;
+
+    const nextActive = projects.find((project) => !project.deleted);
+    if (nextActive) {
+      setActiveProjectId(nextActive.id);
+      setSelectedNodeId(nextActive.tree.id);
+    }
+  };
+
+  const addChildToSelected = () => {
+    const child = createNode("New task");
+
+    updateActiveProjectTree((tree) =>
+      updateNodeById(tree, selectedNode.id, (node) => ({
+        ...node,
+        children: [...node.children, child]
+      }))
+    );
+
+    setSelectedNodeId(child.id);
+  };
+
+  const toggleNodeDone = (value: boolean) => {
+    if (selectedNode.children.length > 0) return;
+
+    updateActiveProjectTree((tree) =>
+      updateNodeById(tree, selectedNode.id, (node) => ({
+        ...node,
+        done: value
+      }))
+    );
+  };
+
+  const renameNode = (title: string) => {
+    updateActiveProjectTree((tree) =>
+      updateNodeById(tree, selectedNode.id, (node) => ({
+        ...node,
+        title
+      }))
+    );
+  };
+
+  const updateNodeContent = (content: string) => {
+    updateActiveProjectTree((tree) =>
+      updateNodeById(tree, selectedNode.id, (node) => ({
+        ...node,
+        content
+      }))
+    );
+  };
+
+  const updateNodeUrl = (url: string) => {
+    updateActiveProjectTree((tree) =>
+      updateNodeById(tree, selectedNode.id, (node) => ({
+        ...node,
+        url: url.trim() || undefined
+      }))
+    );
+  };
+
+  const addFileToNode = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const data = event.target?.result as string;
+      updateActiveProjectTree((tree) =>
+        updateNodeById(tree, selectedNode.id, (node) => ({
+          ...node,
+          files: [
+            ...node.files,
+            {
+              name: file.name,
+              size: file.size,
+              data
+            }
+          ]
+        }))
+      );
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const removeFileFromNode = (fileName: string) => {
+    updateActiveProjectTree((tree) =>
+      updateNodeById(tree, selectedNode.id, (node) => ({
+        ...node,
+        files: node.files.filter((f) => f.name !== fileName)
+      }))
+    );
+  };
+
+  const deleteNode = (nodeId: string) => {
+    const findAndRemove = (node: TreeNode, targetId: string): TreeNode | null => {
+      const newChildren: TreeNode[] = [];
+      let removed: TreeNode | null = null;
+
+      for (const child of node.children) {
+        if (child.id === targetId) {
+          removed = child;
+        } else {
+          const result = findAndRemove(child, targetId);
+          if (result === null) {
+            newChildren.push(child);
+          } else {
+            removed = result;
+          }
+        }
+      }
+
+      if (removed) {
+        return { ...node, children: newChildren };
+      }
+
+      return null;
+    };
+
+    const toDelete = findNodeById(activeProject.tree, nodeId);
+    if (!toDelete) return;
+
+    updateActiveProjectTree((tree) => {
+      const result = findAndRemove(tree, nodeId);
+      return result ?? tree;
+    });
+
+    setProjects((current) =>
+      current.map((project) =>
+        project.id === activeProject.id
+          ? {
+              ...project,
+              trash: [...project.trash, toDelete]
+            }
+          : project
+      )
+    );
+
+    setSelectedNodeId(activeProject.tree.id);
+  };
+
+  const restoreFromTrash = (nodeId: string) => {
+    const toRestore = activeProject.trash.find((node) => node.id === nodeId);
+    if (!toRestore) return;
+
+    updateActiveProjectTree((tree) => ({
+      ...tree,
+      children: [...tree.children, toRestore]
+    }));
+
+    setProjects((current) =>
+      current.map((project) =>
+        project.id === activeProject.id
+          ? {
+              ...project,
+              trash: project.trash.filter((node) => node.id !== nodeId)
+            }
+          : project
+      )
+    );
+  };
+
+  const emptyTrash = () => {
+    setProjects((current) =>
+      current.map((project) =>
+        project.id === activeProject.id
+          ? {
+              ...project,
+              trash: []
+            }
+          : project
+      )
+    );
+  };
+
+  return (
+    <div className="app-shell">
+      <aside className="project-panel">
+        <div className="panel-header">
+          <h1>Notion Forest</h1>
+          <button className="solid-btn" onClick={addProject}>
+            <Plus size={16} /> New project
+          </button>
+        </div>
+
+        <div className="project-search">
+          <input
+            type="search"
+            className="search-input"
+            placeholder="Search all notes..."
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+          />
+
+          {globalSearchResults && searchQuery.trim() && (
+            <div className="search-results search-results-sidebar">
+              <p className="search-results-header">
+                Found in {globalSearchResults.length} project{globalSearchResults.length !== 1 ? "s" : ""}
+              </p>
+              {globalSearchResults.map((result) => (
+                <div key={result.projectId} className="search-result-group">
+                  <button
+                    className="search-result-project"
+                    onClick={() => {
+                      setActiveProjectId(result.projectId);
+                      setSelectedNodeId(result.node.id);
+                    }}
+                  >
+                    {result.projectName}
+                  </button>
+                  <ul className="tree-root search-result-tree">
+                    <TreeCard
+                      node={result.node}
+                      selectedId={selectedNode.id}
+                      depth={0}
+                      onSelect={(nodeId) => {
+                        setActiveProjectId(result.projectId);
+                        setSelectedNodeId(nodeId);
+                      }}
+                      collapsedNodes={collapsedNodes}
+                      onToggleCollapse={(nodeId) => {
+                        setCollapsedNodes((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(nodeId)) {
+                            next.delete(nodeId);
+                          } else {
+                            next.add(nodeId);
+                          }
+                          return next;
+                        });
+                      }}
+                    />
+                  </ul>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="project-list">
+          {sortedActiveProjectViews.map(({ project, percent }) => {
+            const active = project.id === activeProject.id;
+
+            return (
+              <div
+                key={project.id}
+                className={`project-pill ${active ? "is-active" : ""}`}
+                onClick={() => {
+                  setActiveProjectId(project.id);
+                  setSelectedNodeId(project.tree.id);
+                }}
+                role="button"
+                tabIndex={0}
+              >
+                <input
+                  value={project.name}
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={(event) => renameProject(project.id, event.target.value)}
+                />
+                <span>{percent}%</span>
+                <button
+                  className="project-delete-btn"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    deleteProject(project.id);
+                  }}
+                  title="Move project to trash"
+                  disabled={!canDeleteCurrentProject}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        {sortedCompletedProjectViews.length > 0 && (
+          <div className="project-section">
+            <button
+              className="project-section-toggle"
+              onClick={() => setShowCompletedProjects(!showCompletedProjects)}
+            >
+              <span>Completed projects ({sortedCompletedProjectViews.length})</span>
+              <ChevronDown className={showCompletedProjects ? "is-open" : ""} size={16} />
+            </button>
+
+            {showCompletedProjects && (
+              <div className="project-list project-list-island">
+                {sortedCompletedProjectViews.map(({ project, percent }) => {
+                  const active = project.id === activeProject.id;
+
+                  return (
+                    <div
+                      key={project.id}
+                      className={`project-pill ${active ? "is-active" : ""}`}
+                      onClick={() => {
+                        setActiveProjectId(project.id);
+                        setSelectedNodeId(project.tree.id);
+                      }}
+                      role="button"
+                      tabIndex={0}
+                    >
+                      <input
+                        value={project.name}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => renameProject(project.id, event.target.value)}
+                      />
+                      <span>{percent}%</span>
+                      <button
+                        className="project-delete-btn"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          deleteProject(project.id);
+                        }}
+                        title="Move project to trash"
+                        disabled={!canDeleteCurrentProject}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="project-progress">
+          <div className="ring" style={{ ["--value" as string]: `${projectPercent}%` }} />
+          <div>
+            <p className="meta-label">Current project progress</p>
+            <strong>{projectStats.done}/{projectStats.total} nodes complete</strong>
+          </div>
+        </div>
+
+        {activeProject.trash.length > 0 && (
+          <div className="trash-section">
+            <button
+              className="trash-toggle"
+              onClick={() => setShowTrash(!showTrash)}
+            >
+              <Trash2 size={16} /> Trash ({activeProject.trash.length})
+            </button>
+
+            {showTrash && (
+              <div className="trash-list">
+                {activeProject.trash.map((node) => (
+                  <div key={node.id} className="trash-item">
+                    <span className="trash-title">{node.title}</span>
+                    <div className="trash-actions">
+                      <button
+                        className="trash-restore"
+                        onClick={() => restoreFromTrash(node.id)}
+                        title="Restore"
+                      >
+                        ↩️
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <button
+                  className="empty-trash-btn"
+                  onClick={emptyTrash}
+                >
+                  Empty trash
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {sortedDeletedProjectViews.length > 0 && (
+          <div className="project-section project-section-trash">
+            <button
+              className="project-section-toggle"
+              onClick={() => setShowDeletedProjects(!showDeletedProjects)}
+            >
+              <span>Project trash ({sortedDeletedProjectViews.length})</span>
+              <ChevronDown className={showDeletedProjects ? "is-open" : ""} size={16} />
+            </button>
+
+            {showDeletedProjects && (
+              <div className="project-list project-list-island">
+                {sortedDeletedProjectViews.map(({ project, percent }) => (
+                  <div key={project.id} className="project-pill project-pill-is-trash">
+                    <input value={project.name} readOnly />
+                    <span>{percent}%</span>
+                    <button
+                      className="project-restore-btn"
+                      onClick={() => restoreProject(project.id)}
+                      title="Restore project"
+                    >
+                      <RotateCcw size={14} />
+                    </button>
+                  </div>
+                ))}
+                <button className="empty-trash-btn" onClick={emptyDeletedProjects}>
+                  Empty project trash
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </aside>
+
+      <main className="tree-panel">
+        <header className="tree-header">
+          <h2>{activeProject.name}</h2>
+        </header>
+
+        <ul className="tree-root">
+          <TreeCard
+            node={displayTree}
+            selectedId={selectedNode.id}
+            depth={0}
+            onSelect={setSelectedNodeId}
+            collapsedNodes={collapsedNodes}
+            onToggleCollapse={(nodeId) => {
+              setCollapsedNodes((prev) => {
+                const next = new Set(prev);
+                if (next.has(nodeId)) {
+                  next.delete(nodeId);
+                } else {
+                  next.add(nodeId);
+                }
+                return next;
+              });
+            }}
+          />
+        </ul>
+      </main>
+
+      <section className="editor-panel">
+        <NodeEditor
+          node={selectedNode}
+          canToggleDone={selectedNode.children.length === 0}
+          isComplete={isNodeComplete(selectedNode)}
+          onRename={renameNode}
+          onToggleDone={toggleNodeDone}
+          onAddChild={addChildToSelected}
+          onContentChange={updateNodeContent}
+          onUrlChange={updateNodeUrl}
+          onDelete={() => deleteNode(selectedNode.id)}
+          onAddFile={addFileToNode}
+          onRemoveFile={removeFileFromNode}
+        />
+      </section>
+    </div>
+  );
+}
