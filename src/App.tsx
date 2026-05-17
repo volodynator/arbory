@@ -1043,7 +1043,7 @@ export default function App() {
       await availableUpdate.downloadAndInstall((event) => {
         switch (event.event) {
           case "Started":
-            contentLength = event.data.contentLength;
+            contentLength = event.data.contentLength ?? 0;
             downloaded = 0;
             setUpdateProgress(0);
             setUpdateMessage(`Downloading ${availableUpdate.version}...`);
