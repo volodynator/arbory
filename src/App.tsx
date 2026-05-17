@@ -5,7 +5,7 @@ import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { createLowlight, common } from "lowlight";
-import { BadgeCheck, Check, ChevronDown, Circle, CircleCheckBig, Clock, Eraser, File, FileArchive, FileCode2, FileImage, FileText, Film, Link2, Paperclip, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { BadgeCheck, Check, ChevronDown, Circle, CircleCheckBig, Clock, Copy, Eraser, File, FileArchive, FileCode2, FileImage, FileText, Film, Link2, Paperclip, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
 
 type TreeNode = {
@@ -22,8 +22,14 @@ type Project = {
   id: string;
   name: string;
   tree: TreeNode;
-  trash: TreeNode[];
+  trash: TrashEntry[];
   deleted?: boolean;
+};
+
+type TrashEntry = {
+  node: TreeNode;
+  parentId: string | null;
+  index: number;
 };
 
 type WorkspacePayload = {
@@ -49,8 +55,14 @@ type PersistedProject = {
   id: string;
   name: string;
   tree: PersistedTreeNode;
-  trash: PersistedTreeNode[];
+  trash: PersistedTrashEntry[];
   deleted: boolean;
+};
+
+type PersistedTrashEntry = {
+  node: PersistedTreeNode;
+  parentId: string | null;
+  index: number;
 };
 
 type PersistedWorkspace = {
@@ -164,9 +176,13 @@ const saveWorkspaceToFiles = async (payload: WorkspacePayload) => {
 
   const persistedProjects: PersistedProject[] = [];
   for (const project of payload.projects) {
-    const trashPersistedNodes: PersistedTreeNode[] = [];
+    const trashPersistedNodes: PersistedTrashEntry[] = [];
     for (const trashNode of project.trash) {
-      trashPersistedNodes.push(await persistNode(trashNode, notesDir));
+      trashPersistedNodes.push({
+        node: await persistNode(trashNode.node, notesDir),
+        parentId: trashNode.parentId,
+        index: trashNode.index
+      });
     }
 
     persistedProjects.push({
@@ -202,10 +218,23 @@ const loadWorkspaceFromFiles = async (): Promise<WorkspacePayload | null> => {
 
   const projects: Project[] = [];
   for (const project of persisted.projects) {
-    const trashNodes: TreeNode[] = [];
+    const trashNodes: TrashEntry[] = [];
     if (project.trash && Array.isArray(project.trash)) {
       for (const trashNode of project.trash) {
-        trashNodes.push(await hydrateNode(trashNode, appDir));
+        if (trashNode && typeof trashNode === "object" && "node" in trashNode) {
+          const entry = trashNode as PersistedTrashEntry;
+          trashNodes.push({
+            node: await hydrateNode(entry.node, appDir),
+            parentId: entry.parentId ?? null,
+            index: Number.isFinite(entry.index) ? entry.index : 0
+          });
+        } else {
+          trashNodes.push({
+            node: await hydrateNode(trashNode as PersistedTreeNode, appDir),
+            parentId: null,
+            index: 0
+          });
+        }
       }
     }
 
@@ -229,11 +258,29 @@ const createNode = (title: string): TreeNode => ({
   id: crypto.randomUUID(),
   title,
   done: false,
-  content: `<h2>${title}</h2><p>Start writing notes, decisions and task details here.</p>`,
+  content: `<h1>${title}</h1><p>Start writing notes, decisions and task details here.</p>`,
   url: undefined,
   files: [],
   children: []
 });
+
+const escapeHtml = (str: string) =>
+  str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+const setTitleInContent = (content: string, title: string) => {
+  try {
+    // Replace first heading (h1..h6) if present, otherwise prepend h1
+    const escaped = escapeHtml(title);
+    const headingRegex = /<h[1-6][^>]*>[\s\S]*?<\/h[1-6]>/i;
+    if (headingRegex.test(content)) {
+      return content.replace(headingRegex, `<h1>${escaped}</h1>`);
+    }
+
+    return `<h1>${escaped}</h1>` + content;
+  } catch (e) {
+    return `<h1>${escapeHtml(title)}</h1>` + content;
+  }
+};
 
 const isNodeComplete = (node: TreeNode): boolean => {
   if (node.children.length === 0) return node.done;
@@ -286,6 +333,166 @@ const findNodeById = (node: TreeNode, targetId: string): TreeNode | null => {
   }
 
   return null;
+};
+
+const findNodeLocationById = (
+  node: TreeNode,
+  targetId: string,
+  parentId: string | null = null
+): { node: TreeNode; parentId: string | null; index: number } | null => {
+  if (node.id === targetId) {
+    return { node, parentId, index: 0 };
+  }
+
+  for (let index = 0; index < node.children.length; index += 1) {
+    const child = node.children[index];
+    if (child.id === targetId) {
+      return { node: child, parentId: node.id, index };
+    }
+
+    const found = findNodeLocationById(child, targetId, node.id);
+    if (found) {
+      return found;
+    }
+  }
+
+  return null;
+};
+
+const stripNodeChildren = (node: TreeNode): TreeNode => ({
+  ...node,
+  children: []
+});
+
+const insertNodeIntoTree = (
+  node: TreeNode,
+  parentId: string,
+  childNode: TreeNode,
+  index: number
+): { tree: TreeNode; inserted: boolean } => {
+  if (node.id === parentId) {
+    const nextChildren = [...node.children];
+    const safeIndex = Math.min(Math.max(index, 0), nextChildren.length);
+    nextChildren.splice(safeIndex, 0, childNode);
+    return {
+      tree: {
+        ...node,
+        children: nextChildren
+      },
+      inserted: true
+    };
+  }
+
+  let inserted = false;
+  const children = node.children.map((child) => {
+    const result = insertNodeIntoTree(child, parentId, childNode, index);
+    if (result.inserted) {
+      inserted = true;
+    }
+    return result.tree;
+  });
+
+  return {
+    tree: inserted ? { ...node, children } : node,
+    inserted
+  };
+};
+
+const htmlToPlainText = (html: string) => {
+  if (typeof DOMParser === "undefined") {
+    return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  return doc.body.textContent?.replace(/\s+/g, " ").trim() || "";
+};
+
+const removeFirstHeadingFromHtml = (html: string) => {
+  try {
+    // remove the first <h1..h6>...</h1> occurrence
+    return html.replace(/<h[1-6][^>]*>[\s\S]*?<\/h[1-6]>/i, "");
+  } catch (e) {
+    return html;
+  }
+};
+
+const buildPromptFromNode = (node: TreeNode) => {
+  const shortHeader = [
+    "You are my high-level strategic AI assistant and execution partner.",
+    "Analyze tasks deeply, identify risks and blockers, and produce clear, actionable plans.",
+    "For each task provide: Objective, Analysis, Risks/Blockers, Missing info, Recommended approach, Step-by-step plan, Priority, Difficulty, Tools, Final recommendations.",
+    "Compare alternatives, explain tradeoffs, and recommend concrete next steps.",
+    "Be concise, structured, and ask only essential clarifying questions when needed.",
+    "",
+    "---",
+    ""
+  ];
+
+  try {
+    const lines: string[] = [
+      ...shortHeader,
+    "Task:",
+    node.title,
+    `Status: ${node.done ? "done" : "in progress"}`
+  ];
+
+  if (node.url) {
+    lines.push(`Link: ${node.url}`);
+  }
+
+  const contentForDescription = removeFirstHeadingFromHtml(node.content);
+  const noteText = htmlToPlainText(contentForDescription);
+  if (noteText) {
+    lines.push("", "Description:", noteText);
+  }
+
+  if (node.files.length > 0) {
+    lines.push("", "Attachments:");
+    for (const file of node.files) {
+      lines.push(`- ${file.name}`);
+    }
+  }
+
+  const writeChildren = (children: TreeNode[], depth: number) => {
+    for (const child of children) {
+      const prefix = "  ".repeat(depth);
+      lines.push("", `${prefix}- ${child.title} (${child.done ? "done" : "in progress"})`);
+
+      const childNotes = htmlToPlainText(child.content);
+      if (childNotes) {
+        lines.push(`${prefix}  Description: ${childNotes}`);
+      }
+
+      if (child.url) {
+        lines.push(`${prefix}  Link: ${child.url}`);
+      }
+
+      if (child.files.length > 0) {
+        lines.push(`${prefix}  Attachments:`);
+        for (const file of child.files) {
+          lines.push(`${prefix}  - ${file.name}`);
+        }
+      }
+
+      if (child.children.length > 0) {
+        lines.push(`${prefix}  Subtasks:`);
+        writeChildren(child.children, depth + 2);
+      }
+    }
+  };
+
+  if (node.children.length > 0) {
+    lines.push("", "Subtasks:");
+    writeChildren(node.children, 1);
+  }
+
+    // keep the prompt focused on the instruction block + task details
+
+    return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  } catch (err) {
+    console.error("buildPromptFromNode failed", err);
+    return `Error generating prompt: ${err instanceof Error ? err.message : String(err)}`;
+  }
 };
 
 const initialProjects: Project[] = [
@@ -414,7 +621,9 @@ type NodeEditorProps = {
   onAddChild: () => void;
   onContentChange: (html: string) => void;
   onUrlChange: (url: string) => void;
+  onGeneratePrompt: () => void;
   onDelete: () => void;
+  onDeleteSubtree: () => void;
   onAddFile: (file: File) => void;
   onRemoveFile: (fileName: string) => void;
 };
@@ -523,7 +732,9 @@ function NodeEditor({
   onAddChild,
   onContentChange,
   onUrlChange,
+  onGeneratePrompt,
   onDelete,
+  onDeleteSubtree,
   onAddFile,
   onRemoveFile
 }: NodeEditorProps) {
@@ -643,6 +854,9 @@ function NodeEditor({
           <button className="ghost-btn" onClick={onAddChild}>
             <Plus size={16} /> Add child
           </button>
+          <button className="ghost-btn" onClick={onGeneratePrompt} title="Generate prompt from this node and its children">
+            <Copy size={16} /> Prompt
+          </button>
           <button
             className={`done-btn ${isComplete ? "is-done" : ""}`}
             onClick={() => onToggleDone(!node.done)}
@@ -652,9 +866,18 @@ function NodeEditor({
             {isComplete ? <RotateCcw size={16} /> : <Check size={16} />}
             {isComplete ? "Reopen" : "Complete"}
           </button>
-          <button className="delete-btn" onClick={onDelete} title="Delete to trash">
+          <button className="delete-btn" onClick={onDelete} title="Delete task (preserve subtasks)">
             <Trash2 size={16} />
           </button>
+          {node.children.length > 0 && (
+            <button
+              className="delete-btn"
+              onClick={onDeleteSubtree}
+              title="Delete task and all subtasks (move subtree to trash)"
+            >
+              <Trash2 size={16} /> Delete subtree
+            </button>
+          )}
         </div>
       </header>
       {!canToggleDone && (
@@ -773,7 +996,10 @@ export default function App() {
   const [showDeletedProjects, setShowDeletedProjects] = useState(true);
   const [projectPanelWidth, setProjectPanelWidth] = useState(300);
   const [isResizingProjectPanel, setIsResizingProjectPanel] = useState(false);
+  const [promptNodeId, setPromptNodeId] = useState<string | null>(null);
+  const [promptCopyState, setPromptCopyState] = useState<"idle" | "copied" | "error">("idle");
   const saveTimeoutRef = useRef<number | null>(null);
+  const promptCopyTimeoutRef = useRef<number | null>(null);
   const projectPanelResizeStartXRef = useRef(0);
   const projectPanelResizeStartWidthRef = useRef(300);
 
@@ -969,6 +1195,13 @@ export default function App() {
     [activeProject, selectedNodeId]
   );
 
+  const promptNode = useMemo(
+    () => (promptNodeId ? findNodeById(activeProject.tree, promptNodeId) : null),
+    [activeProject.tree, promptNodeId]
+  );
+
+  const promptText = useMemo(() => (promptNode ? buildPromptFromNode(promptNode) : ""), [promptNode]);
+
   const projectViews = useMemo(
     () =>
       projects.map((project) => ({
@@ -1052,6 +1285,25 @@ export default function App() {
     };
   }, [projects, activeProjectId, selectedNodeId, isHydrated]);
 
+  useEffect(() => {
+    if (promptCopyTimeoutRef.current !== null) {
+      window.clearTimeout(promptCopyTimeoutRef.current);
+      promptCopyTimeoutRef.current = null;
+    }
+
+    if (!promptNode) {
+      setPromptCopyState("idle");
+    }
+  }, [promptNode]);
+
+  useEffect(() => {
+    return () => {
+      if (promptCopyTimeoutRef.current !== null) {
+        window.clearTimeout(promptCopyTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const projectStats = useMemo(() => subtreeCompletion(activeProject.tree), [activeProject]);
   const projectPercent = Math.round((projectStats.done / projectStats.total) * 100);
   const canDeleteCurrentProject = visibleProjectViews.length > 1;
@@ -1086,7 +1338,12 @@ export default function App() {
 
   const renameProject = (projectId: string, name: string) => {
     setProjects((current) =>
-      current.map((project) => (project.id === projectId ? { ...project, name } : project))
+      current.map((project) => {
+        if (project.id !== projectId) return project;
+
+        const nextTree = { ...project.tree, title: name, content: setTitleInContent(project.tree.content, name) };
+        return { ...project, name, tree: nextTree };
+      })
     );
   };
 
@@ -1174,7 +1431,8 @@ export default function App() {
     updateActiveProjectTree((tree) =>
       updateNodeById(tree, selectedNode.id, (node) => ({
         ...node,
-        title
+        title,
+        content: setTitleInContent(node.content, title)
       }))
     );
   };
@@ -1227,8 +1485,111 @@ export default function App() {
     );
   };
 
+  const openPrompt = () => {
+    setPromptNodeId(selectedNode.id);
+  };
+
+  const closePrompt = () => {
+    setPromptNodeId(null);
+    setPromptCopyState("idle");
+  };
+
+  const copyPromptToClipboard = async () => {
+    if (!promptText) return;
+
+    try {
+      await navigator.clipboard.writeText(promptText);
+      setPromptCopyState("copied");
+
+      if (promptCopyTimeoutRef.current !== null) {
+        window.clearTimeout(promptCopyTimeoutRef.current);
+      }
+
+      promptCopyTimeoutRef.current = window.setTimeout(() => {
+        setPromptCopyState("idle");
+        promptCopyTimeoutRef.current = null;
+      }, 1800);
+    } catch (error) {
+      console.error("Failed to copy prompt", error);
+      setPromptCopyState("error");
+    }
+  };
+
   const deleteNode = (nodeId: string) => {
-    const findAndRemove = (node: TreeNode, targetId: string): TreeNode | null => {
+    const location = findNodeLocationById(activeProject.tree, nodeId);
+    if (!location) return;
+
+    if (location.parentId === null) {
+      window.alert("The root node cannot be deleted.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      location.node.children.length > 0
+        ? `Delete "${location.node.title}"? Its subtasks will stay in the tree and the task itself will move to trash.`
+        : `Delete "${location.node.title}" and move it to trash?`
+    );
+
+    if (!confirmed) return;
+
+    const removeNodePreservingChildren = (node: TreeNode, targetId: string): TreeNode => {
+      const nextChildren: TreeNode[] = [];
+
+      for (const child of node.children) {
+        if (child.id === targetId) {
+          nextChildren.push(...child.children);
+          continue;
+        }
+
+        nextChildren.push(removeNodePreservingChildren(child, targetId));
+      }
+
+      return {
+        ...node,
+        children: nextChildren
+      };
+    };
+
+    updateActiveProjectTree((tree) => {
+      return removeNodePreservingChildren(tree, nodeId);
+    });
+
+    setProjects((current) =>
+      current.map((project) =>
+        project.id === activeProject.id
+          ? {
+              ...project,
+              trash: [
+                ...project.trash,
+                {
+                  node: stripNodeChildren(location.node),
+                  parentId: location.parentId,
+                  index: location.index
+                }
+              ]
+            }
+          : project
+      )
+    );
+
+    setSelectedNodeId(location.parentId ?? activeProject.tree.id);
+  };
+
+  const deleteSubtree = (nodeId: string) => {
+    const location = findNodeLocationById(activeProject.tree, nodeId);
+    if (!location) return;
+
+    if (location.parentId === null) {
+      window.alert("The root node cannot be deleted.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete "${location.node.title}" and ALL its subtasks? This will move the entire subtree to trash.`
+    );
+    if (!confirmed) return;
+
+    const removeEntire = (node: TreeNode, targetId: string): TreeNode | null => {
       const newChildren: TreeNode[] = [];
       let removed: TreeNode | null = null;
 
@@ -1236,7 +1597,7 @@ export default function App() {
         if (child.id === targetId) {
           removed = child;
         } else {
-          const result = findAndRemove(child, targetId);
+          const result = removeEntire(child, targetId);
           if (result === null) {
             newChildren.push(child);
           } else {
@@ -1256,7 +1617,7 @@ export default function App() {
     if (!toDelete) return;
 
     updateActiveProjectTree((tree) => {
-      const result = findAndRemove(tree, nodeId);
+      const result = removeEntire(tree, nodeId);
       return result ?? tree;
     });
 
@@ -1265,30 +1626,49 @@ export default function App() {
         project.id === activeProject.id
           ? {
               ...project,
-              trash: [...project.trash, toDelete]
+              trash: [
+                ...project.trash,
+                {
+                  node: toDelete,
+                  parentId: location.parentId,
+                  index: location.index
+                }
+              ]
             }
           : project
       )
     );
 
-    setSelectedNodeId(activeProject.tree.id);
+    setSelectedNodeId(location.parentId ?? activeProject.tree.id);
   };
 
   const restoreFromTrash = (nodeId: string) => {
-    const toRestore = activeProject.trash.find((node) => node.id === nodeId);
+    const toRestore = activeProject.trash.find((entry) => entry.node.id === nodeId);
     if (!toRestore) return;
 
-    updateActiveProjectTree((tree) => ({
-      ...tree,
-      children: [...tree.children, toRestore]
-    }));
+    updateActiveProjectTree((tree) => {
+      if (toRestore.parentId) {
+        const inserted = insertNodeIntoTree(tree, toRestore.parentId, toRestore.node, toRestore.index);
+        if (inserted.inserted) {
+          return inserted.tree;
+        }
+      }
+
+      const nextChildren = [...tree.children];
+      const safeIndex = Math.min(Math.max(toRestore.index, 0), nextChildren.length);
+      nextChildren.splice(safeIndex, 0, toRestore.node);
+      return {
+        ...tree,
+        children: nextChildren
+      };
+    });
 
     setProjects((current) =>
       current.map((project) =>
         project.id === activeProject.id
           ? {
               ...project,
-              trash: project.trash.filter((node) => node.id !== nodeId)
+              trash: project.trash.filter((entry) => entry.node.id !== nodeId)
             }
           : project
       )
@@ -1556,13 +1936,13 @@ export default function App() {
 
             {showTrash && (
               <div className="trash-list">
-                {activeProject.trash.map((node) => (
-                  <div key={node.id} className="trash-item">
-                    <span className="trash-title">{node.title}</span>
+                {activeProject.trash.map((entry) => (
+                  <div key={entry.node.id} className="trash-item">
+                    <span className="trash-title">{entry.node.title}</span>
                     <div className="trash-actions">
                       <button
                         className="trash-restore"
-                        onClick={() => restoreFromTrash(node.id)}
+                        onClick={() => restoreFromTrash(entry.node.id)}
                         title="Restore"
                       >
                         ↩️
@@ -1659,11 +2039,48 @@ export default function App() {
           onAddChild={addChildToSelected}
           onContentChange={updateNodeContent}
           onUrlChange={updateNodeUrl}
+          onGeneratePrompt={openPrompt}
           onDelete={() => deleteNode(selectedNode.id)}
+          onDeleteSubtree={() => deleteSubtree(selectedNode.id)}
           onAddFile={addFileToNode}
           onRemoveFile={removeFileFromNode}
         />
       </section>
+
+      {promptNodeId !== null && (
+        <div className="prompt-modal-backdrop" role="presentation" onClick={closePrompt}>
+          <div
+            className="prompt-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="prompt-modal-title"
+            aria-describedby="prompt-modal-description"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="prompt-modal-header">
+              <div>
+                <p className="meta-label" id="prompt-modal-description">Generated prompt</p>
+                <h3 id="prompt-modal-title">{promptNode ? promptNode.title : "(node not found)"}</h3>
+              </div>
+              <button className="prompt-modal-close" onClick={closePrompt} aria-label="Close prompt dialog">
+                <X size={16} />
+              </button>
+            </div>
+
+            <textarea className="prompt-textarea" readOnly value={promptNode ? promptText : "Unable to build prompt: node not found in current project."} />
+
+            <div className="prompt-modal-actions">
+              <button className="solid-btn" onClick={copyPromptToClipboard} disabled={!promptNode || !promptText}>
+                <Copy size={16} />
+                {promptCopyState === "copied" ? "Copied" : promptCopyState === "error" ? "Copy failed" : "Copy prompt"}
+              </button>
+              <button className="ghost-btn" onClick={closePrompt}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
