@@ -470,7 +470,39 @@ function EditorToolbar({ editor }: EditorToolbarProps) {
       </div>
 
       <div className="toolbar-group">
-        <button className={buttonClass(false, "is-tone-neutral")} onClick={() => editor.chain().focus().clearNodes().run()} title="Clear formatting">
+        <button
+          className={buttonClass(false, "is-tone-neutral")}
+          onClick={() => {
+            if (!editor) return;
+
+            // Clear block-level formatting (headings, lists, etc.)
+            editor.chain().focus().clearNodes().run();
+
+            // Also remove common inline marks (bold, italic, underline, strike, code, link)
+            try {
+              const anyEditor: any = editor;
+              const { state, view } = anyEditor;
+              const { from, to } = state.selection;
+              const tr = state.tr;
+              const marksToRemove = ["bold", "italic", "underline", "strike", "code", "link"];
+
+              for (const name of marksToRemove) {
+                const markType = state.schema.marks[name];
+                if (markType) tr.removeMark(from, to, markType);
+              }
+
+              if (tr.docChanged) view.dispatch(tr);
+            } catch (e) {
+              // Best-effort fallback: try unset commands if available
+              try {
+                editor.chain().focus().unsetBold?.().unsetItalic?.().unsetUnderline?.().unsetStrike?.().run();
+              } catch (__) {
+                // ignore
+              }
+            }
+          }}
+          title="Clear formatting"
+        >
           <Eraser size={16} />
         </button>
       </div>
