@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import ExternalCalendar from "./ExternalCalendar";
 import { EditorContent, useEditor } from "@tiptap/react";
 import Link from "@tiptap/extension-link";
 import StarterKit from "@tiptap/starter-kit";
@@ -14,6 +15,14 @@ type TreeNode = {
   done: boolean;
   content: string;
   url?: string;
+  // ISO 8601 datetime string for task due date/time (optional)
+  due?: string;
+  // True when the user explicitly picked a time; false means date-only / all-day
+  dueTimeSet?: boolean;
+  // If true, this node represents an event with duration
+  isEvent?: boolean;
+  // Duration in minutes for events
+  durationMinutes?: number;
   files: { name: string; size: number; data: string }[];
   children: TreeNode[];
 };
@@ -46,6 +55,10 @@ type PersistedTreeNode = {
   done: boolean;
   noteFile: string;
   url?: string;
+  due?: string;
+  dueTimeSet?: boolean;
+  isEvent?: boolean;
+  durationMinutes?: number;
   filesDir?: string;
   files: { name: string; size: number; data: string }[];
   children: PersistedTreeNode[];
@@ -139,6 +152,10 @@ const persistNode = async (
     done: node.done,
     noteFile: `notes/${fileName}`,
     url: node.url,
+    due: node.due,
+    dueTimeSet: node.dueTimeSet,
+    isEvent: node.isEvent,
+    durationMinutes: node.durationMinutes,
     files: node.files,
     children
   };
@@ -166,6 +183,10 @@ const hydrateNode = async (
     done: node.done,
     content,
     url: node.url,
+    due: node.due,
+    dueTimeSet: node.dueTimeSet ?? false,
+    isEvent: node.isEvent,
+    durationMinutes: node.durationMinutes ?? undefined,
     files: node.files ?? [],
     children
   };
@@ -260,6 +281,7 @@ const createNode = (title: string): TreeNode => ({
   done: false,
   content: `<h1>${title}</h1><p>Start writing notes, decisions and task details here.</p>`,
   url: undefined,
+  dueTimeSet: false,
   files: [],
   children: []
 });
@@ -568,7 +590,21 @@ function TreeCard({ node, selectedId, depth, onSelect, collapsedNodes, onToggleC
   return (
     <li className="tree-item">
       <div className={`tree-card ${selectedId === node.id ? "is-selected" : ""}`}>
-        <button className="tree-card-main" onClick={handleTitleClick}>
+        <div
+          className="tree-card-main"
+          role="button"
+          tabIndex={0}
+          onClick={handleTitleClick}
+          onKeyDown={(e: React.KeyboardEvent) => {
+            if (e.key === "Enter" || e.key === " ") {
+              if (node.url) {
+                window.open(node.url, "_blank");
+              } else {
+                onSelect(node.id);
+              }
+            }
+          }}
+        >
           {hasChildren && (
             <button
               className={`collapse-btn ${isCollapsed ? "is-collapsed" : ""}`}
@@ -591,7 +627,7 @@ function TreeCard({ node, selectedId, depth, onSelect, collapsedNodes, onToggleC
             <span className="task-meta">{percent}% complete</span>
           </span>
           <span className="task-badge">{completion.done}/{completion.total}</span>
-        </button>
+        </div>
       </div>
       {hasChildren && !isCollapsed && (
         <ul className="tree-children">
@@ -626,6 +662,9 @@ type NodeEditorProps = {
   onDeleteSubtree: () => void;
   onAddFile: (file: File) => void;
   onRemoveFile: (fileName: string) => void;
+  onDueChange: (iso?: string, hasTime?: boolean) => void;
+  onToggleEvent: (isEvent: boolean) => void;
+  onDurationChange: (minutes: number) => void;
 };
 
 type EditorToolbarProps = {
@@ -737,9 +776,67 @@ function NodeEditor({
   onDeleteSubtree,
   onAddFile,
   onRemoveFile
+  ,onDueChange, onToggleEvent, onDurationChange
 }: NodeEditorProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [dueTimeDraft, setDueTimeDraft] = useState("");
   const lowlight = createLowlight(common);
+
+  const formatDateInputValue = (value?: string) => {
+    if (!value) return "";
+    try {
+      const date = new Date(value);
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+    } catch {
+      return "";
+    }
+  };
+
+  const formatTimeInputValue = (value?: string) => {
+    if (!value) return "";
+    try {
+      const date = new Date(value);
+      return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+    } catch {
+      return "";
+    }
+  };
+
+  useEffect(() => {
+    if (!node.due || !node.dueTimeSet) {
+      setDueTimeDraft("");
+      return;
+    }
+
+    setDueTimeDraft(formatTimeInputValue(node.due));
+  }, [node.due, node.dueTimeSet, node.id]);
+
+  const clearDueDate = () => {
+    setDueTimeDraft("");
+    onToggleEvent(false);
+    onDueChange(undefined, false);
+  };
+
+  const clearDueTime = () => {
+    if (!node.due) {
+      setDueTimeDraft("");
+      onToggleEvent(false);
+      onDueChange(undefined, false);
+      return;
+    }
+
+    try {
+      const d = new Date(node.due);
+      const iso = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0);
+      setDueTimeDraft("");
+      onToggleEvent(false);
+      onDueChange(iso.toISOString(), false);
+    } catch {
+      setDueTimeDraft("");
+      onToggleEvent(false);
+      onDueChange(undefined, false);
+    }
+  };
 
   const editor = useEditor({
     extensions: [
@@ -849,6 +946,136 @@ function NodeEditor({
             value={node.url || ""}
             onChange={(event) => onUrlChange(event.target.value)}
           />
+
+          <div className="editor-due-row">
+            <label className="due-label" htmlFor="task-due-date">Due</label>
+            <input
+              type="date"
+              id="task-due-date"
+              className="due-date"
+              aria-label="Due date"
+              value={formatDateInputValue(node.due)}
+              onChange={(e) => {
+                const datePart = e.target.value;
+                const hasTime = node.dueTimeSet === true;
+                const timePart = (() => {
+                  if (!node.due || !hasTime) return "00:00";
+                  return formatTimeInputValue(node.due) || "00:00";
+                })();
+
+                if (!datePart) {
+                  onToggleEvent(false);
+                  onDueChange(undefined, false);
+                  return;
+                }
+
+                const [year, month, day] = datePart.split("-").map((part) => Number(part));
+                const [hours, minutes] = timePart.split(":").map((part) => Number(part));
+                const iso = new Date(year, month - 1, day, hours, minutes);
+                onDueChange(isNaN(iso.getTime()) ? undefined : iso.toISOString(), hasTime);
+              }}
+            />
+            <input
+              type="text"
+              className="due-time"
+              aria-label="Due time"
+              inputMode="numeric"
+              placeholder="HH:MM"
+              pattern="[0-9]{2}:[0-9]{2}"
+              value={dueTimeDraft}
+              onChange={(e) => {
+                const nextTime = e.target.value;
+                setDueTimeDraft(nextTime);
+
+                if (!nextTime) {
+                  // preserve date only
+                  onToggleEvent(false);
+                  if (!node.due) return onDueChange(undefined, false);
+                  try {
+                    const d = new Date(node.due);
+                    const iso = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0);
+                    return onDueChange(iso.toISOString(), false);
+                  } catch {
+                    return onDueChange(undefined, false);
+                  }
+                }
+
+                if (!node.due) return;
+                if (!/^\d{2}:\d{2}$/.test(nextTime)) {
+                  return;
+                }
+                try {
+                  const d = new Date(node.due);
+                  const iso = new Date(
+                    d.getFullYear(),
+                    d.getMonth(),
+                    d.getDate(),
+                    Number(nextTime.slice(0, 2)),
+                    Number(nextTime.slice(3, 5))
+                  );
+                  onDueChange(isNaN(iso.getTime()) ? undefined : iso.toISOString(), true);
+                } catch {
+                  onDueChange(undefined, false);
+                }
+              }}
+              onBlur={() => {
+                if (!dueTimeDraft) return;
+                if (/^\d{1,2}$/.test(dueTimeDraft) && node.due) {
+                  const normalizedHour = String(Number(dueTimeDraft)).padStart(2, "0");
+                  const normalized = `${normalizedHour}:00`;
+                  setDueTimeDraft(normalized);
+                  try {
+                    const d = new Date(node.due);
+                    const iso = new Date(d.getFullYear(), d.getMonth(), d.getDate(), Number(normalizedHour), 0);
+                    onDueChange(isNaN(iso.getTime()) ? undefined : iso.toISOString(), true);
+                  } catch {
+                    onDueChange(undefined, false);
+                  }
+                  return;
+                }
+                if (!/^\d{2}:\d{2}$/.test(dueTimeDraft)) {
+                  setDueTimeDraft(node.dueTimeSet && node.due ? formatTimeInputValue(node.due) : "");
+                }
+              }}
+            />
+
+            <div className="due-clear-actions">
+              <button type="button" className="ghost-btn due-clear-btn" onClick={clearDueDate} disabled={!node.due} title="Remove due date">
+                <Eraser size={14} />
+                Date
+              </button>
+              <button type="button" className="ghost-btn due-clear-btn" onClick={clearDueTime} disabled={!node.due || !node.dueTimeSet} title="Remove due time">
+                <Eraser size={14} />
+                Time
+              </button>
+            </div>
+
+            <label className="event-toggle">
+              <input
+                type="checkbox"
+                checked={!!node.isEvent}
+                disabled={!node.dueTimeSet}
+                onChange={(e) => onToggleEvent(e.target.checked)}
+              />
+              Event
+            </label>
+
+            <label className={`duration-group ${node.isEvent ? "is-visible" : "is-hidden"}`} htmlFor="event-duration-input">
+              <span className="duration-label">
+                <Clock size={14} /> Duration
+              </span>
+              <input
+                id="event-duration-input"
+                type="number"
+                min={0}
+                className="event-duration"
+                value={node.durationMinutes ?? 60}
+                onChange={(e) => onDurationChange(Math.max(0, Number(e.target.value) || 0))}
+                title="Duration (minutes)"
+              />
+              <span className="duration-suffix">min</span>
+            </label>
+          </div>
         </div>
         <div className="editor-actions">
           <button className="ghost-btn" onClick={onAddChild}>
@@ -980,6 +1207,8 @@ const searchAllProjects = (projects: Project[], query: string) => {
 };
 
 export default function App() {
+  const [showExternalCalendar, setShowExternalCalendar] = useState(false);
+  const [calendarFocus, setCalendarFocus] = useState<Date>(() => new Date());
   const [projects, setProjects] = useState<Project[]>(initialProjects);
   const [activeProjectId, setActiveProjectId] = useState(initialProjects[0].id);
   const [selectedNodeId, setSelectedNodeId] = useState(initialProjects[0].tree.id);
@@ -995,6 +1224,22 @@ export default function App() {
   const [showCompletedProjects, setShowCompletedProjects] = useState(true);
   const [showDeletedProjects, setShowDeletedProjects] = useState(true);
   const [projectPanelWidth, setProjectPanelWidth] = useState(300);
+
+  useEffect(() => {
+    (window as any).__openExternalCalendar = () => setShowExternalCalendar(true);
+    return () => { (window as any).__openExternalCalendar = undefined; };
+  }, []);
+
+  useEffect(() => {
+    if (!showExternalCalendar) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [showExternalCalendar]);
   const [isResizingProjectPanel, setIsResizingProjectPanel] = useState(false);
   const [promptNodeId, setPromptNodeId] = useState<string | null>(null);
   const [promptCopyState, setPromptCopyState] = useState<"idle" | "copied" | "error">("idle");
@@ -1334,6 +1579,35 @@ export default function App() {
     setProjects((current) => [...current, newProject]);
     setActiveProjectId(newProject.id);
     setSelectedNodeId(root.id);
+  };
+
+  const updateNodeDue = (iso?: string, hasTime = false) => {
+    updateActiveProjectTree((tree) =>
+      updateNodeById(tree, selectedNode.id, (node) => ({
+        ...node,
+        due: iso,
+        dueTimeSet: iso ? hasTime : false
+      }))
+    );
+  };
+
+  const toggleNodeEvent = (isEvent: boolean) => {
+    updateActiveProjectTree((tree) =>
+      updateNodeById(tree, selectedNode.id, (node) => ({
+        ...node,
+        isEvent,
+        durationMinutes: isEvent ? node.durationMinutes ?? 60 : undefined
+      }))
+    );
+  };
+
+  const updateNodeDuration = (minutes: number) => {
+    updateActiveProjectTree((tree) =>
+      updateNodeById(tree, selectedNode.id, (node) => ({
+        ...node,
+        durationMinutes: minutes
+      }))
+    );
   };
 
   const renameProject = (projectId: string, name: string) => {
@@ -1713,6 +1987,13 @@ export default function App() {
           <button className="solid-btn" onClick={addProject}>
             <Plus size={16} /> New project
           </button>
+          
+          <button className="ghost-btn" onClick={() => {
+            setCalendarFocus(selectedNode.due ? new Date(selectedNode.due) : new Date());
+            setShowExternalCalendar((s) => !s);
+          }} title="Open calendar">
+            <Clock size={16} /> Calendar
+          </button>
         </div>
 
         {updateStatus !== "idle" && (
@@ -2044,8 +2325,36 @@ export default function App() {
           onDeleteSubtree={() => deleteSubtree(selectedNode.id)}
           onAddFile={addFileToNode}
           onRemoveFile={removeFileFromNode}
+          onDueChange={updateNodeDue}
+          onToggleEvent={toggleNodeEvent}
+          onDurationChange={updateNodeDuration}
         />
       </section>
+
+      
+
+      {showExternalCalendar && (
+        <ExternalCalendar
+          events={(() => {
+            const out: Array<{ id: string; title: string; due?: string; dueTimeSet?: boolean; isEvent?: boolean; durationMinutes?: number }> = [];
+            const collect = (n: TreeNode) => {
+              if (n.due || n.isEvent) {
+                out.push({ id: n.id, title: n.title, due: n.due, dueTimeSet: n.dueTimeSet, isEvent: n.isEvent, durationMinutes: n.durationMinutes });
+              }
+              for (const c of n.children) collect(c);
+            };
+            collect(activeProject.tree);
+            return out;
+          })()}
+          defaultDate={calendarFocus}
+          onClose={() => setShowExternalCalendar(false)}
+          onSelectEvent={(id) => {
+            setActiveProjectId(activeProject.id);
+            setSelectedNodeId(id);
+            setShowExternalCalendar(false);
+          }}
+        />
+      )}
 
       {promptNodeId !== null && (
         <div className="prompt-modal-backdrop" role="presentation" onClick={closePrompt}>
