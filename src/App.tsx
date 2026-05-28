@@ -6,7 +6,7 @@ import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { createLowlight, common } from "lowlight";
-import { BadgeCheck, Check, ChevronDown, Circle, CircleCheckBig, Clock, Copy, Eraser, File, FileArchive, FileCode2, FileImage, FileText, Film, Link2, Paperclip, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { BadgeCheck, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Circle, CircleCheckBig, Clock, Copy, PencilLine, File, FileArchive, FileCode2, FileImage, FileText, Film, Link2, Paperclip, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { check } from "@tauri-apps/plugin-updater";
 
 type TreeNode = {
@@ -310,21 +310,16 @@ const isNodeComplete = (node: TreeNode): boolean => {
 };
 
 const subtreeCompletion = (node: TreeNode): { done: number; total: number } => {
-  const selfDone = isNodeComplete(node) ? 1 : 0;
-  const fromChildren = node.children.reduce(
-    (acc, child) => {
-      const childResult = subtreeCompletion(child);
-      return {
-        done: acc.done + childResult.done,
-        total: acc.total + childResult.total
-      };
-    },
-    { done: 0, total: 0 }
-  );
+  if (node.children.length === 0) {
+    return {
+      done: node.done ? 1 : 0,
+      total: 1
+    };
+  }
 
   return {
-    done: selfDone + fromChildren.done,
-    total: 1 + fromChildren.total
+    done: node.children.reduce((acc, child) => acc + (child.done ? 1 : 0), 0),
+    total: node.children.length
   };
 };
 
@@ -418,6 +413,86 @@ const insertNodeIntoTree = (
     tree: inserted ? { ...node, children } : node,
     inserted
   };
+};
+
+const removeNodeFromTree = (
+  node: TreeNode,
+  targetId: string
+): { tree: TreeNode; removedNode: TreeNode | null } => {
+  let removedNode: TreeNode | null = null;
+  const children: TreeNode[] = [];
+
+  for (const child of node.children) {
+    if (child.id === targetId) {
+      removedNode = child;
+      continue;
+    }
+
+    const result = removeNodeFromTree(child, targetId);
+    if (result.removedNode) {
+      removedNode = result.removedNode;
+    }
+    children.push(result.tree);
+  }
+
+  return {
+    tree: { ...node, children },
+    removedNode
+  };
+};
+
+const moveNodeInTree = (
+  tree: TreeNode,
+  nodeId: string,
+  direction: "up" | "down" | "left" | "right"
+): TreeNode => {
+  const location = findNodeLocationById(tree, nodeId);
+  if (!location || location.parentId === null) {
+    return tree;
+  }
+
+  const nodeToMove = findNodeById(tree, nodeId);
+  if (!nodeToMove) {
+    return tree;
+  }
+
+  const parentNode = findNodeById(tree, location.parentId);
+  if (!parentNode) {
+    return tree;
+  }
+
+  let targetParentId: string;
+  let targetIndex: number;
+
+  if (direction === "up") {
+    if (location.index === 0) return tree;
+    targetParentId = location.parentId;
+    targetIndex = location.index - 1;
+  } else if (direction === "down") {
+    if (location.index >= parentNode.children.length - 1) return tree;
+    targetParentId = location.parentId;
+    targetIndex = location.index + 1;
+  } else if (direction === "right") {
+    if (location.index === 0) return tree;
+
+    const previousSibling = parentNode.children[location.index - 1];
+    if (!previousSibling) return tree;
+
+    targetParentId = previousSibling.id;
+    targetIndex = previousSibling.children.length;
+  } else {
+    if (location.parentId === tree.id) return tree;
+
+    const parentLocation = findNodeLocationById(tree, location.parentId);
+    if (!parentLocation) return tree;
+
+    targetParentId = parentLocation.parentId ?? tree.id;
+    targetIndex = parentLocation.index + 1;
+  }
+
+  const removed = removeNodeFromTree(tree, nodeId);
+  const inserted = insertNodeIntoTree(removed.tree, targetParentId, nodeToMove, targetIndex);
+  return inserted.inserted ? inserted.tree : tree;
 };
 
 const htmlToPlainText = (html: string) => {
@@ -567,16 +642,39 @@ type TreeCardProps = {
   selectedId: string;
   depth: number;
   onSelect: (nodeId: string) => void;
+  onMoveNode: (nodeId: string, direction: "up" | "down" | "left" | "right") => void;
   collapsedNodes: Set<string>;
   onToggleCollapse: (nodeId: string) => void;
+  parentId: string | null;
+  index: number;
+  siblingCount: number;
+  rootId: string;
+  showMoveControls: boolean;
 };
 
-function TreeCard({ node, selectedId, depth, onSelect, collapsedNodes, onToggleCollapse }: TreeCardProps) {
+function TreeCard({
+  node,
+  selectedId,
+  depth,
+  onSelect,
+  onMoveNode,
+  collapsedNodes,
+  onToggleCollapse,
+  parentId,
+  index,
+  siblingCount,
+  rootId,
+  showMoveControls
+}: TreeCardProps) {
   const done = isNodeComplete(node);
   const completion = subtreeCompletion(node);
   const percent = Math.round((completion.done / completion.total) * 100);
   const isCollapsed = collapsedNodes.has(node.id);
   const hasChildren = node.children.length > 0;
+  const canMoveUp = parentId !== null && index > 0;
+  const canMoveDown = parentId !== null && index < siblingCount - 1;
+  const canMoveLeft = parentId !== null && parentId !== rootId;
+  const canMoveRight = parentId !== null && index > 0;
 
   const handleTitleClick = (e: React.MouseEvent) => {
     if (node.url) {
@@ -624,22 +722,84 @@ function TreeCard({ node, selectedId, depth, onSelect, collapsedNodes, onToggleC
               {node.url && <Link2 className="link-icon" size={14} />}
               {node.title}
             </span>
-            <span className="task-meta">{percent}% complete</span>
+            <div className="task-progress-row">
+              <div className="task-progress-track" aria-hidden="true">
+                <span className="task-progress-fill" style={{ width: `${percent}%` }} />
+              </div>
+              {hasChildren && <span className="task-progress-label">{completion.done}/{completion.total}</span>}
+            </div>
           </span>
-          <span className="task-badge">{completion.done}/{completion.total}</span>
+          {showMoveControls && parentId !== null && (
+            <span className="tree-actions" aria-label="Move task">
+              <button
+                type="button"
+                className="tree-move-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (canMoveUp) onMoveNode(node.id, "up");
+                }}
+                disabled={!canMoveUp}
+                title="Move up"
+              >
+                <ChevronUp size={12} />
+              </button>
+              <button
+                type="button"
+                className="tree-move-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (canMoveDown) onMoveNode(node.id, "down");
+                }}
+                disabled={!canMoveDown}
+                title="Move down"
+              >
+                <ChevronDown size={12} />
+              </button>
+              <button
+                type="button"
+                className="tree-move-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (canMoveLeft) onMoveNode(node.id, "left");
+                }}
+                disabled={!canMoveLeft}
+                title="Move left"
+              >
+                <ChevronLeft size={12} />
+              </button>
+              <button
+                type="button"
+                className="tree-move-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (canMoveRight) onMoveNode(node.id, "right");
+                }}
+                disabled={!canMoveRight}
+                title="Move right"
+              >
+                <ChevronRight size={12} />
+              </button>
+            </span>
+          )}
         </div>
       </div>
       {hasChildren && !isCollapsed && (
         <ul className="tree-children">
-          {node.children.map((child) => (
+          {node.children.map((child, childIndex) => (
             <TreeCard
               key={child.id}
               node={child}
               selectedId={selectedId}
               depth={depth + 1}
               onSelect={onSelect}
+              onMoveNode={onMoveNode}
               collapsedNodes={collapsedNodes}
               onToggleCollapse={onToggleCollapse}
+              parentId={node.id}
+              index={childIndex}
+              siblingCount={node.children.length}
+              rootId={rootId}
+              showMoveControls={showMoveControls}
             />
           ))}
         </ul>
@@ -755,7 +915,7 @@ function EditorToolbar({ editor }: EditorToolbarProps) {
           }}
           title="Clear formatting"
         >
-          <Eraser size={16} />
+          <PencilLine size={16} />
         </button>
       </div>
     </div>
@@ -1041,11 +1201,11 @@ function NodeEditor({
 
             <div className="due-clear-actions">
               <button type="button" className="ghost-btn due-clear-btn" onClick={clearDueDate} disabled={!node.due} title="Remove due date">
-                <Eraser size={14} />
+                <PencilLine size={14} />
                 Date
               </button>
               <button type="button" className="ghost-btn due-clear-btn" onClick={clearDueTime} disabled={!node.due || !node.dueTimeSet} title="Remove due time">
-                <Eraser size={14} />
+                <PencilLine size={14} />
                 Time
               </button>
             </div>
@@ -1224,6 +1384,10 @@ export default function App() {
   const [showCompletedProjects, setShowCompletedProjects] = useState(true);
   const [showDeletedProjects, setShowDeletedProjects] = useState(true);
   const [projectPanelWidth, setProjectPanelWidth] = useState(300);
+  const [isProjectPanelHidden, setIsProjectPanelHidden] = useState(false);
+  const [isEditingProjectName, setIsEditingProjectName] = useState(false);
+  const [projectNameDraft, setProjectNameDraft] = useState("");
+  const projectNameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     (window as any).__openExternalCalendar = () => setShowExternalCalendar(true);
@@ -1344,6 +1508,10 @@ export default function App() {
     };
   }, [isResizingProjectPanel]);
 
+  const shellClassName = ["app-shell", isResizingProjectPanel ? "is-resizing-project-panel" : "", isProjectPanelHidden ? "is-project-panel-hidden" : ""]
+    .filter(Boolean)
+    .join(" ");
+
   const startProjectPanelResize = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
 
@@ -1434,6 +1602,22 @@ export default function App() {
       projects[0],
     [projects, activeProjectId]
   );
+
+  useEffect(() => {
+    setProjectNameDraft(activeProject.name);
+
+    if (!isEditingProjectName) {
+      return;
+    }
+
+    const input = projectNameInputRef.current;
+    if (!input) return;
+
+    window.requestAnimationFrame(() => {
+      input.focus();
+      input.select();
+    });
+  }, [activeProject.id, activeProject.name, isEditingProjectName]);
 
   const selectedNode = useMemo(
     () => findNodeById(activeProject.tree, selectedNodeId) ?? activeProject.tree,
@@ -1621,6 +1805,18 @@ export default function App() {
     );
   };
 
+  const commitProjectName = () => {
+    const nextName = projectNameDraft.trim();
+    setIsEditingProjectName(false);
+
+    if (!nextName || nextName === activeProject.name) {
+      setProjectNameDraft(activeProject.name);
+      return;
+    }
+
+    renameProject(activeProject.id, nextName);
+  };
+
   const deleteProject = (projectId: string) => {
     const targetProject = projects.find((project) => project.id === projectId && !project.deleted);
     if (!targetProject || !canDeleteCurrentProject) return;
@@ -1727,6 +1923,25 @@ export default function App() {
         url: url.trim() || undefined
       }))
     );
+  };
+
+  const moveNodeByDirection = (nodeId: string, direction: "up" | "down" | "left" | "right") => {
+    if (direction === "right") {
+      const location = findNodeLocationById(activeProject.tree, nodeId);
+      if (location?.parentId) {
+        const parentNode = findNodeById(activeProject.tree, location.parentId);
+        const previousSibling = parentNode?.children[location.index - 1];
+        if (previousSibling) {
+          setCollapsedNodes((prev) => {
+            const next = new Set(prev);
+            next.delete(previousSibling.id);
+            return next;
+          });
+        }
+      }
+    }
+
+    updateActiveProjectTree((tree) => moveNodeInTree(tree, nodeId, direction));
   };
 
   const addFileToNode = (file: File) => {
@@ -1976,13 +2191,25 @@ export default function App() {
   }
 
   return (
-    <div className={`app-shell ${isResizingProjectPanel ? "is-resizing-project-panel" : ""}`} style={{ ["--project-panel-width" as string]: `${projectPanelWidth}px` }}>
+    <div className={shellClassName} style={{ ["--project-panel-width" as string]: `${projectPanelWidth}px` }}>
       <aside className="project-panel">
         <div className="panel-header">
-          <div className="panel-brand-row">
-            <div className="panel-brand-title">
-              <h1>Arbory</h1>
+          <div className="panel-header-top">
+            <div className="panel-brand-row">
+              <div className="panel-brand-title">
+                <h1>Arbory</h1>
+              </div>
             </div>
+            <button
+              type="button"
+              className="ghost-btn project-panel-toggle project-panel-toggle-icon"
+              onClick={() => setIsProjectPanelHidden((current) => !current)}
+              aria-pressed={isProjectPanelHidden}
+              aria-label={isProjectPanelHidden ? "Show project list" : "Hide project list"}
+              title={isProjectPanelHidden ? "Show project list" : "Hide project list"}
+            >
+              {isProjectPanelHidden ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+            </button>
           </div>
           <button className="solid-btn" onClick={addProject}>
             <Plus size={16} /> New project
@@ -2090,6 +2317,7 @@ export default function App() {
                         setActiveProjectId(result.projectId);
                         setSelectedNodeId(nodeId);
                       }}
+                      onMoveNode={moveNodeByDirection}
                       collapsedNodes={collapsedNodes}
                       onToggleCollapse={(nodeId) => {
                         setCollapsedNodes((prev) => {
@@ -2102,6 +2330,11 @@ export default function App() {
                           return next;
                         });
                       }}
+                      parentId={null}
+                      index={0}
+                      siblingCount={1}
+                      rootId={result.node.id}
+                      showMoveControls={false}
                     />
                   </ul>
                 </div>
@@ -2110,11 +2343,11 @@ export default function App() {
           )}
         </div>
 
-        <div className="project-list">
+            <div className="project-list">
           {sortedActiveProjectViews.map(({ project, percent }) => {
             const active = project.id === activeProject.id;
 
-            return (
+              return (
               <div
                 key={project.id}
                 className={`project-pill ${active ? "is-active" : ""}`}
@@ -2125,11 +2358,7 @@ export default function App() {
                 role="button"
                 tabIndex={0}
               >
-                <input
-                  value={project.name}
-                  onClick={(event) => event.stopPropagation()}
-                  onChange={(event) => renameProject(project.id, event.target.value)}
-                />
+                <span className="project-name-readonly">{project.name}</span>
                 <span>{percent}%</span>
                 <button
                   className="project-delete-btn"
@@ -2173,11 +2402,7 @@ export default function App() {
                       role="button"
                       tabIndex={0}
                     >
-                      <input
-                        value={project.name}
-                        onClick={(event) => event.stopPropagation()}
-                        onChange={(event) => renameProject(project.id, event.target.value)}
-                      />
+                      <span className="project-name-readonly">{project.name}</span>
                       <span>{percent}%</span>
                       <button
                         className="project-delete-btn"
@@ -2285,7 +2510,40 @@ export default function App() {
 
       <main className="tree-panel">
         <header className="tree-header">
-          <h2>{activeProject.name}</h2>
+          <div className="project-title-row">
+            {isEditingProjectName ? (
+              <input
+                ref={projectNameInputRef}
+                className="project-title-input"
+                value={projectNameDraft}
+                onChange={(event) => setProjectNameDraft(event.target.value)}
+                onBlur={commitProjectName}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitProjectName();
+                  }
+
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setProjectNameDraft(activeProject.name);
+                    setIsEditingProjectName(false);
+                  }
+                }}
+              />
+            ) : (
+              <h2>{activeProject.name}</h2>
+            )}
+            <button
+              type="button"
+              className="ghost-btn project-name-edit-btn"
+              onClick={() => setIsEditingProjectName(true)}
+              aria-label="Edit project name"
+              title="Edit project name"
+            >
+              <PencilLine size={28} color="currentColor" strokeWidth={1.8} />
+            </button>
+          </div>
         </header>
 
         <ul className="tree-root">
@@ -2294,6 +2552,7 @@ export default function App() {
             selectedId={selectedNode.id}
             depth={0}
             onSelect={setSelectedNodeId}
+            onMoveNode={moveNodeByDirection}
             collapsedNodes={collapsedNodes}
             onToggleCollapse={(nodeId) => {
               setCollapsedNodes((prev) => {
@@ -2306,6 +2565,11 @@ export default function App() {
                 return next;
               });
             }}
+            parentId={null}
+            index={0}
+            siblingCount={1}
+            rootId={displayTree.id}
+            showMoveControls={true}
           />
         </ul>
       </main>
