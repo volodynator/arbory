@@ -318,7 +318,7 @@ const subtreeCompletion = (node: TreeNode): { done: number; total: number } => {
   }
 
   return {
-    done: node.children.reduce((acc, child) => acc + (child.done ? 1 : 0), 0),
+    done: node.children.reduce((acc, child) => acc + (isNodeComplete(child) ? 1 : 0), 0),
     total: node.children.length
   };
 };
@@ -722,12 +722,14 @@ function TreeCard({
               {node.url && <Link2 className="link-icon" size={14} />}
               {node.title}
             </span>
-            <div className="task-progress-row">
-              <div className="task-progress-track" aria-hidden="true">
-                <span className="task-progress-fill" style={{ width: `${percent}%` }} />
+            {hasChildren && (
+              <div className="task-progress-row">
+                <div className="task-progress-track" aria-hidden="true">
+                  <span className="task-progress-fill" style={{ width: `${percent}%` }} />
+                </div>
+                <span className="task-progress-label">{percent}% • {completion.done}/{completion.total}</span>
               </div>
-              {hasChildren && <span className="task-progress-label">{completion.done}/{completion.total}</span>}
-            </div>
+            )}
           </span>
           {showMoveControls && parentId !== null && (
             <span className="tree-actions" aria-label="Move task">

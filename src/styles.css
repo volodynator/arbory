@@ -1101,7 +1101,6 @@ textarea:focus-visible {
   display: inline-flex;
   color: var(--accent);
 }
-
 .task-progress-row {
   display: flex;
   align-items: center;
@@ -1113,6 +1112,7 @@ textarea:focus-visible {
   width: 180px;
   max-width: 100%;
   height: 6px;
+  margin-top: 4px;
   border-radius: 999px;
   overflow: hidden;
   background: rgba(31, 40, 51, 0.08);
@@ -1122,7 +1122,7 @@ textarea:focus-visible {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent), #2c8c6b);
+  background: var(--accent-strong);
   transition: width 160ms ease;
 }
 
@@ -1130,6 +1130,7 @@ textarea:focus-visible {
   font-size: 0.78rem;
   color: var(--muted);
   white-space: nowrap;
+  margin-left: 8px;
 }
 
 .tree-actions {
@@ -1940,30 +1941,9 @@ textarea:focus-visible {
     white-space: normal;
   }
 
-
-
-}
-
 .app-shell.is-project-panel-hidden {
   --project-panel-width: 300px;
   align-items: start;
-}
-
-.app-shell.is-project-panel-hidden .project-panel > :not(.panel-header),
-.app-shell.is-project-panel-hidden .panel-header-actions,
-.app-shell.is-project-panel-hidden .panel-resizer {
-  display: none;
-}
-
-.app-shell.is-project-panel-hidden .project-panel {
-  align-self: start;
-  height: fit-content;
-  min-height: 0;
-  padding-bottom: 10px;
-}
-
-.app-shell.is-project-panel-hidden .panel-header {
-  gap: 8px;
 }
 
 .app-shell.is-project-panel-hidden .panel-header-top {
@@ -1980,4 +1960,5 @@ textarea:focus-visible {
   .app-shell.is-project-panel-hidden {
     --project-panel-width: 100%;
   }
+}
 }
